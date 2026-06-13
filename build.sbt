@@ -44,7 +44,10 @@ lazy val root = (project in file("."))
       nimbusJoseJwt,
       nimbusOauth2Oidc,
       munitCatsEffect,
-      munit
+      munit,
+      ironPureconfig,
+      pureconfig,
+      pureconfigGeneric
     )
   )
 

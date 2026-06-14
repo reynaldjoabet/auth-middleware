@@ -96,8 +96,10 @@ object BearerAuth {
         scheme: TokenScheme,
         token: String,
         ctx: AuthContext
-    ): F[Either[AuthError, Unit]] =
-      (scheme, ctx.dpopKeyThumbprint) match {
+    ): F[Either[AuthError, Unit]] = {
+      val boundJkt =
+        ctx.confirmation.collect { case ConfirmationClaim.DPoP(jkt) => jkt }
+      (scheme, boundJkt) match {
         case (TokenScheme.Dpop, Some(jkt)) =>
           dpop.fold(
             fail(
@@ -120,6 +122,7 @@ object BearerAuth {
         case (TokenScheme.Bearer, None) =>
           pass
       }
+    }
 
     // RFC 8705 §3: a cnf.x5t#S256-bound token is only valid on a connection that
     // presented the matching client certificate.
@@ -127,9 +130,11 @@ object BearerAuth {
         req: Request[F],
         ctx: AuthContext
     ): F[Either[AuthError, Unit]] =
-      ctx.certificateThumbprint match {
-        case None           => pass
-        case Some(expected) =>
+      ctx.confirmation.collect { case ConfirmationClaim.MutualTls(x5tS256) =>
+        x5tS256
+      } match {
+        case None                  => pass
+        case Some(expectedx5tS256) =>
           clientCertificates match {
             case None =>
               fail(
@@ -138,8 +143,8 @@ object BearerAuth {
               )
             case Some(certs) =>
               certs.extract(req).flatMap {
-                case Some(cert) if Mtls.matches(cert, expected) => pass
-                case Some(_)                                    =>
+                case Some(cert) if Mtls.matches(cert, expectedx5tS256) => pass
+                case Some(_)                                           =>
                   fail(
                     AuthError.InvalidToken.CertificateBindingFailed,
                     "certificate thumbprint mismatch"
@@ -191,14 +196,21 @@ object BearerAuth {
   /** Require every scope in `required` on top of authentication. Compose per
     * route group, e.g. `requireScopes(Set("payments:write"))(paymentRoutes)`.
     */
-  def requireScopes[F[_]: Monad](required: Set[String], realm: String = "api")(
+  def requireScopes[F[_]: Monad](
+      required: Set[ScopeToken],
+      realm: String = "api"
+  )(
       routes: AuthedRoutes[AuthContext, F]
   ): AuthedRoutes[AuthContext, F] =
     Kleisli { req =>
       if (required.subsetOf(req.context.scopes)) routes(req)
       else
         OptionT.pure[F](
-          errorResponse(AuthError.InsufficientScope(required), realm, None)
+          errorResponse(
+            AuthError.InsufficientScope(required.map(_.value)),
+            realm,
+            None
+          )
         )
     }
 
@@ -210,7 +222,7 @@ object BearerAuth {
     * such as payment initiation or beneficiary changes.
     */
   def requireAcr[F[_]: Monad: Clock](
-      acceptableAcrValues: Set[String],
+      acceptableAcrValues: Set[Acr],
       maxAge: Option[FiniteDuration] = None,
       realm: String = "api"
   )(routes: AuthedRoutes[AuthContext, F]): AuthedRoutes[AuthContext, F] =
@@ -234,7 +246,10 @@ object BearerAuth {
             OptionT.pure[F](
               errorResponse(
                 AuthError
-                  .InsufficientUserAuthentication(acceptableAcrValues, maxAge),
+                  .InsufficientUserAuthentication(
+                    acceptableAcrValues.map(_.value),
+                    maxAge
+                  ),
                 realm,
                 None
               )

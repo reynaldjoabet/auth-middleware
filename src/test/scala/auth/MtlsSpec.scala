@@ -9,7 +9,9 @@ import org.http4s.dsl.Http4sDsl
 import org.http4s.implicits.*
 import org.http4s.{AuthedRoutes, Header, Method, Request, Status}
 import org.typelevel.ci.*
-import auth.given
+
+import io.github.iltotore.iron.*
+
 class MtlsSpec extends CatsEffectSuite {
   import TestTokens.*
 
@@ -29,7 +31,7 @@ class MtlsSpec extends CatsEffectSuite {
     )
 
   private val routes: AuthedRoutes[AuthContext, IO] = AuthedRoutes.of {
-    case GET -> Root / "accounts" as ctx => Ok(ctx.subject)
+    case GET -> Root / "accounts" as ctx => Ok(ctx.subject.value: String)
   }
 
   private def app(

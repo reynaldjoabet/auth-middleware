@@ -36,3 +36,17 @@ So both token types have an `aud` claim — but they point at different kinds of
 | --- | --- | --- |
 | Access token | the API / resource server | "may this token be used at this API?" |
 | ID token | the client app (`client_id`) | "was this login minted for this app?" |
+
+
+"Mint" just means create/generate/issue — like a mint stamps coins. A value you mint is one your own code produces and emits into the world; a value you receive is one that arrives from someone else and you have to inspect.
+
+- The authorization server mints an `access_token`, a `jti`, an `authorization_code`, a `request_uri`. It chooses the format — say, a 32-byte random value, base64url-encoded, 16–256 chars. Since you generate it, you can guarantee that shape, so the type can be strict (`MintedJti = [A-Za-z0-9._~-]{16,256}`), and you can construct it with a total/compile-time constructor because you'll never feed it garbage.
+
+- The resource server receives an `access_token` in the `Authorization` header, and reads the `jti`, `sub`, and `scope` claims out of it. You didn't make these. Some other authorization server did, and the spec (RFC 7519 ) lets it put almost anything non-blank in a `jti`.
+
+Who authors it	Type strictness	How you build it
+TokenJwtId (mint)	your AS generates it	strict (16–256, fixed charset)	total / trusted
+ReceivedJwtId (receive)	a peer put it in a token	lenient (non-blank, ≤256)	Either (validate, can reject)
+
+- You mint a route requirement: `Custom(ScopeToken("partner:settlement"))`. You author that string in your own source code, so the curated strict grammar applies and it's validated at compile time — you're the authority, so a violation is your bug to fix now.
+- You receive granted scopes: the scope claim from an incoming token, parsed leniently through Inbound.scopes, dropping anything malformed — because a peer authored those and might send something off-spec.

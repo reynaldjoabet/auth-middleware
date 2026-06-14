@@ -24,34 +24,32 @@ import com.nimbusds.jwt.JWTClaimsSet
   * @param authTime
   *   when the user actually authenticated (`auth_time`), used for `max_age`
   *   freshness checks in step-up flows
-  * @param dpopKeyThumbprint
-  *   the `cnf.jkt` confirmation claim (RFC 9449): the JWK SHA-256 thumbprint of
-  *   the DPoP key this token is bound to
-  * @param certificateThumbprint
-  *   the `cnf.x5t#S256` confirmation claim (RFC 8705): the SHA-256 thumbprint
-  *   of the client certificate this token is bound to
+  * @param confirmation
+  *   the RFC 7800 `cnf` sender-constraint binding, if present: either a DPoP
+  *   key thumbprint (`jkt`, RFC 9449) or a client-certificate thumbprint
+  *   (`x5t#S256`, RFC 8705). The two are mutually exclusive.
   * @param claims
   *   the full validated claims set, for access to custom claims
   */
 final case class AuthContext(
-    subject: String,
-    clientId: Option[String],
-    scopes: Set[String],
-    tokenId: Option[String],
+    subject: Subject,
+    clientId: Option[ClientId],
+    scopes: Set[ScopeToken],
+    tokenId: Option[ReceivedJwtId],
     expiresAt: Instant,
-    acr: Option[String],
+    acr: Option[Acr],
     authTime: Option[Instant],
-    dpopKeyThumbprint: Option[String],
-    certificateThumbprint: Option[String],
+    confirmation: Option[
+      ConfirmationClaim
+    ], // the two loose dpopKeyThumbprint/certificateThumbprint: Option[String] fields collapsed into one confirmation: Option[ConfirmationClaim]. The enum makes it impossible to represent both or neither binding — a class of bug the two-Option shape allowed.
     claims: JWTClaimsSet
 ) {
-  def hasScope(scope: String): Boolean = scopes.contains(scope)
+  def hasScope(scope: ScopeToken): Boolean = scopes.contains(scope)
 
   /** True when the token is sender-constrained via DPoP or mTLS (carries a
     * `cnf` binding).
     */
-  def isSenderConstrained: Boolean =
-    dpopKeyThumbprint.isDefined || certificateThumbprint.isDefined
+  def isSenderConstrained: Boolean = confirmation.isDefined
 
   /** Redacted rendering, safe for logs and audit events. */
   override def toString: String =

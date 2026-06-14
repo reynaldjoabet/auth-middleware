@@ -7,7 +7,7 @@ import java.security.MessageDigest
 import java.security.cert.{CertificateFactory, X509Certificate}
 
 import cats.effect.Sync
-import com.nimbusds.jose.util.Base64URL
+import com.nimbusds.oauth2.sdk.auth.X509CertificateConfirmation
 import org.http4s.Request
 import org.http4s.server.ServerRequestKeys
 import org.typelevel.ci.*
@@ -62,23 +62,25 @@ object ClientCertificates {
 
 object Mtls {
 
-  /** RFC 8705 thumbprint: base64url(SHA-256(DER-encoded certificate)). */
+  /** RFC 8705 thumbprint: base64url(SHA-256(DER-encoded certificate)), computed
+    * by the Nimbus SDK (`X509CertUtils.computeSHA256Thumbprint`).
+    */
   def thumbprint(cert: X509Certificate): String =
-    Base64URL
-      .encode(MessageDigest.getInstance("SHA-256").digest(cert.getEncoded))
-      .toString
+    X509CertificateConfirmation.of(cert).getValue.toString
 
   /** Constant-time comparison of a presented certificate against
-    * `cnf.x5t#S256`.
+    * `cnf.x5t#S256`. Fails closed (returns false) if the certificate cannot be
+    * thumbprinted.
     */
-  def matches(cert: X509Certificate, expectedX5tS256: String): Boolean =
-    try
+  def matches(
+      cert: X509Certificate,
+      expectedX5tS256: CertificateThumbprint
+  ): Boolean =
+    Option(X509CertificateConfirmation.of(cert).getValue).exists { tp =>
       MessageDigest.isEqual(
-        thumbprint(cert).getBytes(StandardCharsets.US_ASCII),
-        expectedX5tS256.getBytes(StandardCharsets.US_ASCII)
+        tp.toString.getBytes(StandardCharsets.US_ASCII),
+        (expectedX5tS256.value: String).getBytes(StandardCharsets.US_ASCII)
       )
-    catch {
-      case _: java.security.cert.CertificateEncodingException => false
     }
 
   private[auth] def urlDecode(value: String): Option[String] =

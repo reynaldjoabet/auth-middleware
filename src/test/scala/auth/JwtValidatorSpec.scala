@@ -1,15 +1,14 @@
 package auth
 
-import cats.effect.IO
-import com.nimbusds.jose.JOSEObjectType
-import com.nimbusds.jose.KeySourceException
-import com.nimbusds.jose.jwk.JWK
-import com.nimbusds.jose.jwk.JWKSelector
-import com.nimbusds.jose.jwk.source.JWKSource
-import com.nimbusds.jose.proc.SecurityContext
-import munit.CatsEffectSuite
-import auth.given
 import scala.concurrent.duration.*
+
+import cats.effect.IO
+import com.nimbusds.jose.proc.SecurityContext
+import com.nimbusds.jose.jwk.source.JWKSource
+import com.nimbusds.jose.jwk.{JWK, JWKSelector}
+import com.nimbusds.jose.{JOSEObjectType, KeySourceException}
+import io.github.iltotore.iron.*
+import munit.CatsEffectSuite
 
 class JwtValidatorSpec extends CatsEffectSuite {
   import TestTokens.*
@@ -24,10 +23,13 @@ class JwtValidatorSpec extends CatsEffectSuite {
   test("accepts a valid token and exposes subject, client, scopes and jti") {
     validator().validate(sign(claims())).map { result =>
       val ctx = result.fold(e => fail(s"expected success, got $e"), identity)
-      assertEquals(ctx.subject, "user-123")
-      assertEquals(ctx.clientId, Some("mobile-app"))
-      assertEquals(ctx.scopes, Set("accounts:read", "payments:read"))
-      assertEquals(ctx.tokenId, Some("jti-abc"))
+      assertEquals(ctx.subject.value: String, "user-123")
+      assertEquals(ctx.clientId.map(c => c.value: String), Some("mobile-app"))
+      assertEquals(
+        ctx.scopes.map(s => s.value: String),
+        Set("accounts:read", "payments:read")
+      )
+      assertEquals(ctx.tokenId.map(j => j.value: String), Some("jti-abc"))
     }
   }
 
@@ -37,7 +39,7 @@ class JwtValidatorSpec extends CatsEffectSuite {
       .build()
     validator().validate(sign(c)).map { result =>
       assertEquals(
-        result.map(_.scopes),
+        result.map(_.scopes.map(s => s.value: String)),
         Right(Set("transfers:write", "accounts:read"))
       )
     }
@@ -77,6 +79,12 @@ class JwtValidatorSpec extends CatsEffectSuite {
 
   test("rejects a token missing the required sub claim") {
     validator().validate(sign(claims(sub = null))).map { result =>
+      assertEquals(result, Left(AuthError.InvalidToken.Rejected))
+    }
+  }
+
+  test("rejects a token whose sub claim is present but blank") {
+    validator().validate(sign(claims(sub = "   "))).map { result =>
       assertEquals(result, Left(AuthError.InvalidToken.Rejected))
     }
   }
@@ -136,6 +144,82 @@ class JwtValidatorSpec extends CatsEffectSuite {
     )
     v.validate(sign(claims())).map { result =>
       assertEquals(result, Left(AuthError.ValidationUnavailable))
+    }
+  }
+
+  test("parses a DPoP cnf.jkt binding via Nimbus") {
+    validator().validate(sign(dpopBoundClaims())).map { result =>
+      val ctx = result.fold(e => fail(s"expected success, got $e"), identity)
+      ctx.confirmation match {
+        case Some(ConfirmationClaim.DPoP(jkt)) =>
+          assertEquals(jkt.value: String, dpopJkt)
+        case other => fail(s"expected DPoP confirmation, got $other")
+      }
+    }
+  }
+
+  test("AuthConfig rejects a non-https jwksUri") {
+    intercept[IllegalArgumentException] {
+      config.copy(jwksUri =
+        java.net.URI.create("http://auth.test.example/jwks")
+      )
+    }
+  }
+
+  test("clientId falls back to the azp claim when client_id is absent") {
+    val c = new com.nimbusds.jwt.JWTClaimsSet.Builder(claims())
+      .claim("client_id", null)
+      .claim("azp", "svc-account")
+      .build()
+    validator().validate(sign(c)).map { result =>
+      assertEquals(
+        result.map(_.clientId.map(id => id.value: String)),
+        Right(Some("svc-account"))
+      )
+    }
+  }
+
+  test("rejects a not-yet-valid token (nbf in the future)") {
+    val c = new com.nimbusds.jwt.JWTClaimsSet.Builder(claims())
+      .notBeforeTime(
+        new java.util.Date(System.currentTimeMillis() + 10.minutes.toMillis)
+      )
+      .build()
+    validator().validate(sign(c)).map { result =>
+      assertEquals(result, Left(AuthError.InvalidToken.Rejected))
+    }
+  }
+
+  test("accepts a token whose aud is a list containing this API") {
+    val c = new com.nimbusds.jwt.JWTClaimsSet.Builder(claims())
+      .audience(java.util.List.of("https://other-api.example", audience))
+      .build()
+    validator()
+      .validate(sign(c))
+      .map(result => assert(result.isRight, result.toString))
+  }
+
+  test("yields empty scopes when neither scope nor scp is present") {
+    validator().validate(sign(claims(scope = None))).map { result =>
+      assertEquals(result.map(_.scopes), Right(Set.empty[ScopeToken]))
+    }
+  }
+
+  test("drops a malformed cnf.jkt (no sender-constraint binding)") {
+    validator().validate(sign(dpopBoundClaims(jkt = "too-short"))).map {
+      result =>
+        assertEquals(result.map(_.confirmation), Right(None))
+    }
+  }
+
+  test("parses an mTLS cnf.x5t#S256 binding via Nimbus") {
+    validator().validate(sign(mtlsBoundClaims(dpopJkt))).map { result =>
+      val ctx = result.fold(e => fail(s"expected success, got $e"), identity)
+      ctx.confirmation match {
+        case Some(ConfirmationClaim.MutualTls(t)) =>
+          assertEquals(t.value: String, dpopJkt)
+        case other => fail(s"expected MutualTls confirmation, got $other")
+      }
     }
   }
 }

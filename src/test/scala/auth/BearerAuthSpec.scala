@@ -2,18 +2,22 @@ package auth
 
 import cats.effect.IO
 import munit.CatsEffectSuite
-import org.http4s.AuthScheme
-import org.http4s.AuthedRoutes
-import org.http4s.BasicCredentials
-import org.http4s.Credentials
-import org.http4s.Method
-import org.http4s.Request
-import org.http4s.Status
 import org.http4s.dsl.Http4sDsl
 import org.http4s.headers.Authorization
 import org.http4s.implicits.*
+import org.http4s.{
+  AuthScheme,
+  AuthedRoutes,
+  BasicCredentials,
+  Credentials,
+  Method,
+  Request,
+  Status
+}
 import org.typelevel.ci.*
-import auth.given
+
+import io.github.iltotore.iron.*
+import io.github.iltotore.iron.constraint.all.*
 
 class BearerAuthSpec extends CatsEffectSuite {
   import TestTokens.*
@@ -30,11 +34,12 @@ class BearerAuthSpec extends CatsEffectSuite {
     )
 
   private val routes: AuthedRoutes[AuthContext, IO] = AuthedRoutes.of {
-    case GET -> Root / "accounts" as ctx => Ok(ctx.subject)
+    case GET -> Root / "accounts" as ctx => Ok(ctx.subject.value: String)
   }
 
   private val paymentRoutes: AuthedRoutes[AuthContext, IO] = AuthedRoutes.of {
-    case POST -> Root / "payments" as ctx => Ok(s"payment by ${ctx.subject}")
+    case POST -> Root / "payments" as ctx =>
+      Ok(s"payment by ${ctx.subject.value: String}")
   }
 
   private val authMiddleware =
@@ -42,10 +47,19 @@ class BearerAuthSpec extends CatsEffectSuite {
 
   private val app = authMiddleware(routes).orNotFound
 
-  private val protectedPayments =
-    BearerAuth.requireScopes[IO](Set("payments:write"))(paymentRoutes)
+  private val paymentsApp =
+    authMiddleware(
+      BearerAuth.requireScopes[IO](Set(ScopeToken("payments:write")))(
+        paymentRoutes
+      )
+    ).orNotFound
 
-  private val paymentsApp = authMiddleware(protectedPayments).orNotFound
+  private val multiScopeApp =
+    authMiddleware(
+      BearerAuth.requireScopes[IO](
+        Set(ScopeToken("payments:write"), ScopeToken("accounts:read"))
+      )(paymentRoutes)
+    ).orNotFound
 
   private def get(path: String, token: Option[String]): Request[IO] = {
     val req = Request[IO](
@@ -118,6 +132,28 @@ class BearerAuthSpec extends CatsEffectSuite {
     paymentsApp.run(req).map(resp => assertEquals(resp.status, Status.Ok))
   }
 
+  test("200 when the token carries all of several required scopes") {
+    val token = sign(claims(scope = Some("accounts:read payments:write")))
+    val req = Request[IO](Method.POST, uri"/payments")
+      .putHeaders(Authorization(Credentials.Token(AuthScheme.Bearer, token)))
+    multiScopeApp.run(req).map(resp => assertEquals(resp.status, Status.Ok))
+  }
+
+  test("403 when the token is missing one of several required scopes") {
+    val token = sign(claims(scope = Some("payments:write")))
+    val req = Request[IO](Method.POST, uri"/payments")
+      .putHeaders(Authorization(Credentials.Token(AuthScheme.Bearer, token)))
+    multiScopeApp.run(req).map { resp =>
+      assertEquals(resp.status, Status.Forbidden)
+      val challenge =
+        resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
+      assert(
+        challenge.contains("""scope="accounts:read payments:write""""),
+        challenge
+      )
+    }
+  }
+
   test(
     "400 invalid_request when the access token is sent in the query string"
   ) {
@@ -160,7 +196,7 @@ class BearerAuthSpec extends CatsEffectSuite {
       maxAge: Option[scala.concurrent.duration.FiniteDuration] = None
   ) =
     authMiddleware(
-      BearerAuth.requireAcr[IO](Set("urn:openbanking:psd2:sca"), maxAge)(
+      BearerAuth.requireAcr[IO](Set(Acr("urn:openbanking:psd2:sca")), maxAge)(
         paymentRoutes
       )
     ).orNotFound
@@ -209,6 +245,33 @@ class BearerAuthSpec extends CatsEffectSuite {
     val req = Request[IO](Method.POST, uri"/payments")
       .putHeaders(Authorization(Credentials.Token(AuthScheme.Bearer, token)))
     stepUpApp().run(req).map(resp => assertEquals(resp.status, Status.Ok))
+  }
+
+  test("401 when the token's acr is present but not an acceptable value") {
+    import scala.concurrent.duration.*
+    val token = sign(acrClaims(Some("urn:openbanking:psd2:loa1"), 1.minute))
+    val req = Request[IO](Method.POST, uri"/payments")
+      .putHeaders(Authorization(Credentials.Token(AuthScheme.Bearer, token)))
+    stepUpApp().run(req).map { resp =>
+      assertEquals(resp.status, Status.Unauthorized)
+      val challenge =
+        resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
+      assert(
+        challenge.contains("""error="insufficient_user_authentication""""),
+        challenge
+      )
+    }
+  }
+
+  test("requireAcr with no acceptable values admits any authenticated user") {
+    val emptyAcrApp = authMiddleware(
+      BearerAuth.requireAcr[IO](Set.empty[Acr])(paymentRoutes)
+    ).orNotFound
+    val req = Request[IO](Method.POST, uri"/payments")
+      .putHeaders(
+        Authorization(Credentials.Token(AuthScheme.Bearer, sign(claims())))
+      )
+    emptyAcrApp.run(req).map(resp => assertEquals(resp.status, Status.Ok))
   }
 
   test("401 with max_age when the authentication is fresh in acr but too old") {

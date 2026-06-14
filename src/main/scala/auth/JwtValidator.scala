@@ -18,6 +18,8 @@ import com.nimbusds.jose.proc.{
 import com.nimbusds.jose.util.DefaultResourceRetriever
 import com.nimbusds.jwt.proc.{DefaultJWTClaimsVerifier, DefaultJWTProcessor}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
+import com.nimbusds.oauth2.sdk.auth.X509CertificateConfirmation
+import com.nimbusds.oauth2.sdk.dpop.JWKThumbprintConfirmation
 
 /** Validates OAuth 2.0 JWT access tokens (RFC 9068 profile). */
 trait JwtValidator[F[_]] {
@@ -146,39 +148,56 @@ object JwtValidator {
     private def accept(
         claims: JWTClaimsSet
     ): F[Either[AuthError, AuthContext]] = {
-      val (jkt, x5t) = confirmationClaims(claims)
-      val ctx = AuthContext(
-        subject = claims.getSubject,
-        clientId =
-          stringClaim(claims, "client_id").orElse(stringClaim(claims, "azp")),
-        scopes = extractScopes(claims),
-        tokenId = Option(claims.getJWTID),
-        expiresAt = claims.getExpirationTime.toInstant,
-        acr = stringClaim(claims, "acr"),
-        authTime = dateClaim(claims, "auth_time"),
-        dpopKeyThumbprint = jkt,
-        certificateThumbprint = x5t,
-        claims = claims
-      )
-      events.authSucceeded(ctx).as(ctx.asRight)
+      val built: Either[(AuthError, String), AuthContext] =
+        for {
+          sub <- Option(claims.getSubject)
+            .toRight((AuthError.InvalidToken.Rejected, "missing sub claim"))
+          subject <- Subject
+            .either(sub)
+            .left
+            .map(m => (AuthError.InvalidToken.Rejected, m))
+          tokenId <- Option(claims.getJWTID) match {
+            case None    => Right(None)
+            case Some(j) =>
+              ReceivedJwtId
+                .either(j)
+                .bimap(m => (AuthError.InvalidToken.Rejected, m), Some(_))
+          }
+        } yield AuthContext(
+          subject = subject,
+          clientId = stringClaim(claims, "client_id")
+            .orElse(stringClaim(claims, "azp"))
+            .flatMap(ClientId.option),
+          scopes = rawScopeTokens(claims).flatMap(ScopeToken.option).toSet,
+          tokenId = tokenId,
+          expiresAt = claims.getExpirationTime.toInstant,
+          acr = stringClaim(claims, "acr").flatMap(Acr.option),
+          authTime = dateClaim(claims, "auth_time"),
+          confirmation = confirmationOf(claims),
+          claims = claims
+        )
+      built match {
+        case Right(ctx)       => events.authSucceeded(ctx).as(ctx.asRight)
+        case Left((err, det)) => reject(err, det)
+      }
     }
 
-    /** RFC 7800 `cnf` confirmation claim: `jkt` (DPoP, RFC 9449) and `x5t#S256`
-      * (mTLS, RFC 8705). Enforcement happens in the middleware, which has
-      * access to the request.
+    /** RFC 7800 `cnf` confirmation, parsed by the Nimbus SDK: `jkt` (DPoP, RFC
+      * 9449) or `x5t#S256` (mTLS, RFC 8705). A thumbprint that is present but
+      * not a well-formed base64url SHA-256 value is dropped (treated as no
+      * binding); enforcement happens in the middleware, which has the request.
       */
-    private def confirmationClaims(
+    private def confirmationOf(
         claims: JWTClaimsSet
-    ): (Option[String], Option[String]) =
-      claims.getClaim("cnf") match {
-        case cnf: java.util.Map[?, ?] =>
-          def str(key: String): Option[String] = cnf.get(key) match {
-            case s: String => Some(s)
-            case _         => None
-          }
-          (str("jkt"), str("x5t#S256"))
-        case _ => (None, None)
-      }
+    ): Option[ConfirmationClaim] =
+      Option(JWKThumbprintConfirmation.parse(claims))
+        .flatMap(c => JwkThumbprint.option(c.getValue.toString))
+        .map(ConfirmationClaim.DPoP(_))
+        .orElse(
+          Option(X509CertificateConfirmation.parse(claims))
+            .flatMap(c => CertificateThumbprint.option(c.getValue.toString))
+            .map(ConfirmationClaim.MutualTls(_))
+        )
 
     private def reject(
         error: AuthError,
@@ -203,15 +222,16 @@ object JwtValidator {
       catch { case _: ParseException => None }
 
     // Both forms seen in the wild: `scope` as a space-delimited string (RFC 9068)
-    // and `scp` as a JSON string array (Okta, Microsoft Entra ID).
-    private def extractScopes(claims: JWTClaimsSet): Set[String] =
+    // and `scp` as a JSON string array (Okta, Microsoft Entra ID). Returns the
+    // raw, unrefined candidates; `ScopeToken.option` refines each and drops malformed.
+    private def rawScopeTokens(claims: JWTClaimsSet): List[String] =
       claims.getClaim("scope") match {
-        case s: String => s.split(' ').iterator.filter(_.nonEmpty).toSet
+        case s: String => s.split(' ').iterator.filter(_.nonEmpty).toList
         case _         =>
           claims.getClaim("scp") match {
             case l: java.util.List[?] =>
-              l.asScala.collect { case s: String => s }.toSet
-            case _ => Set.empty
+              l.asScala.collect { case s: String => s }.toList
+            case _ => Nil
           }
       }
   }

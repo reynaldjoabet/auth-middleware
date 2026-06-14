@@ -1,24 +1,17 @@
 package auth
 
-import com.nimbusds.jose.JOSEObjectType
-import com.nimbusds.jose.JWSAlgorithm
-import com.nimbusds.jose.JWSHeader
-import com.nimbusds.jose.crypto.ECDSASigner
-import com.nimbusds.jose.crypto.MACSigner
-import com.nimbusds.jose.crypto.RSASSASigner
-import com.nimbusds.jose.jwk.Curve
-import com.nimbusds.jose.jwk.ECKey
-import com.nimbusds.jose.jwk.JWKSet
-import com.nimbusds.jose.jwk.RSAKey
-import com.nimbusds.jose.jwk.gen.ECKeyGenerator
-import com.nimbusds.jose.jwk.gen.RSAKeyGenerator
-import com.nimbusds.jose.jwk.source.ImmutableJWKSet
-import com.nimbusds.jose.proc.SecurityContext
-import com.nimbusds.jwt.JWTClaimsSet
-import com.nimbusds.jwt.SignedJWT
 import java.net.URI
 import java.util.Date
+
 import scala.concurrent.duration.*
+
+import com.nimbusds.jose.crypto.{ECDSASigner, MACSigner, RSASSASigner}
+import com.nimbusds.jose.jwk.gen.{ECKeyGenerator, RSAKeyGenerator}
+import com.nimbusds.jose.jwk.source.ImmutableJWKSet
+import com.nimbusds.jose.jwk.{Curve, ECKey, JWKSet, RSAKey}
+import com.nimbusds.jose.proc.SecurityContext
+import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
+import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 
 object TestTokens {
 
@@ -74,7 +67,6 @@ object TestTokens {
     jwt.serialize()
   }
 
-  /** Symmetric token for the algorithm-confusion test. */
   def signHmac(claimsSet: JWTClaimsSet): String = {
     val jwt = new SignedJWT(
       new JWSHeader.Builder(JWSAlgorithm.HS256)
@@ -87,15 +79,12 @@ object TestTokens {
   }
 
   // ---------------------------------------------------------------- DPoP
-
   val dpopKey: ECKey =
     new ECKeyGenerator(Curve.P_256).keyID("dpop-1").generate()
   val rogueDpopKey: ECKey =
     new ECKeyGenerator(Curve.P_256).keyID("dpop-1").generate()
-
   val dpopJkt: String = dpopKey.toPublicJWK.computeThumbprint().toString
 
-  /** Claims with an RFC 9449 `cnf.jkt` binding to [[dpopKey]]. */
   def dpopBoundClaims(
       base: JWTClaimsSet = claims(),
       jkt: String = dpopJkt
@@ -104,7 +93,6 @@ object TestTokens {
       .claim("cnf", java.util.Map.of("jkt", jkt))
       .build()
 
-  /** Claims with an RFC 8705 `cnf.x5t#S256` certificate binding. */
   def mtlsBoundClaims(
       x5tS256: String,
       base: JWTClaimsSet = claims()
@@ -142,7 +130,6 @@ object TestTokens {
   }
 
   // ---------------------------------------------------------------- mTLS
-
   val clientCertPem: String =
     """-----BEGIN CERTIFICATE-----
       |MIIBiDCCAS+gAwIBAgIUTvVZYFM2Yg0SuUS7EflaEH57UmYwCgYIKoZIzj0EAwIw

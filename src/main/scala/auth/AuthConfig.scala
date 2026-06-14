@@ -72,6 +72,10 @@ final case class AuthConfig(
   require(issuer.nonEmpty, "issuer must not be empty")
   require(audience.nonEmpty, "audience must not be empty")
   require(
+    Option(jwksUri.getScheme).exists(_.equalsIgnoreCase("https")),
+    "jwksUri must be an https URL (verification keys must not be fetched over plaintext)"
+  )
+  require(
     allowedAlgorithms.nonEmpty,
     "at least one JWS algorithm must be allowed"
   )

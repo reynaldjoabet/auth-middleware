@@ -47,7 +47,8 @@ lazy val root = (project in file("."))
       munit,
       ironPureconfig,
       pureconfig,
-      pureconfigGeneric
+      pureconfigGeneric,
+      caffeine
     )
   )
 

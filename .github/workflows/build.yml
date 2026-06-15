@@ -47,8 +47,6 @@ jobs:
 
       - name: Set up sbt
         uses: sbt/setup-sbt@v1
-        with:
-          sbt-runner-version: 2.0.0-RC16
 
       - name: Check formatting
         run: sbt "scalafmtCheckAll; scalafmtSbtCheck"

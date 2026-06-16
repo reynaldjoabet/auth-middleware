@@ -2,12 +2,18 @@ package auth
 
 import java.time.Instant
 import com.nimbusds.jwt.JWTClaimsSet
+import io.github.iltotore.iron.*
 
 /** The authenticated principal attached to every request that passes the
   * middleware.
   *
   * @param subject
-  *   the `sub` claim — the end user or service account the token was issued to
+  *   the `sub` claim, always present (required per RFC 9068). For
+  *   machine-to-machine (`client_credentials`) tokens it equals the `client_id`
+  *   (RFC 9068 §2.2); a user-delegated token's `sub` identifies the user and
+  *   differs from the client. Per-route "an end user must be present" is
+  *   enforced by [[BearerAuth.requireUser]] (which compares `sub` to
+  *   `client_id`).
   * @param clientId
   *   the OAuth client that obtained the token (`client_id` or `azp` claim), if
   *   present
@@ -55,4 +61,18 @@ final case class AuthContext(
   override def toString: String =
     s"AuthContext(subject=$subject, clientId=$clientId, scopes=$scopes, tokenId=$tokenId, " +
       s"expiresAt=$expiresAt, acr=$acr, senderConstrained=$isSenderConstrained)"
+}
+
+object AuthContext {
+
+  /** Default "is an end user present?" test used by [[BearerAuth.requireUser]].
+    *
+    * A user-delegated token's `sub` identifies the user and differs from the
+    * client; a `client_credentials` (M2M) token's `sub` equals its `client_id`
+    * (RFC 9068 §2.2). Override with an authorization-server-specific signal
+    * (e.g. requiring `auth_time`/`acr`, or a user-only scope) if your AS sets
+    * `sub = client_id` on user tokens.
+    */
+  val userPresent: AuthContext => Boolean = ctx =>
+    !ctx.clientId.exists(c => (c.value: String) == (ctx.subject.value: String))
 }

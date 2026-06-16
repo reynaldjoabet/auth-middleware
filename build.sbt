@@ -48,9 +48,14 @@ lazy val root = (project in file("."))
       ironPureconfig,
       pureconfig,
       pureconfigGeneric,
-      caffeine
+      caffeine,
+      otelJava,
+      "io.opentelemetry" % "opentelemetry-exporter-otlp" % "1.63.0" % Runtime,
+      "io.opentelemetry" % "opentelemetry-sdk-extension-autoconfigure" % "1.63.0" % Runtime
     )
   )
+
+javaOptions += "-Dotel.java.global-autoconfigure.enabled=true"
 
 addCommandAlias("fmt", "scalafmtAll; scalafmtSbt")
 addCommandAlias("fmtCheck", "scalafmtCheckAll; scalafmtSbtCheck")

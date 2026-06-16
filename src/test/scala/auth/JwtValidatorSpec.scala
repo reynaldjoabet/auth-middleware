@@ -51,6 +51,29 @@ class JwtValidatorSpec extends CatsEffectSuite {
     }
   }
 
+  test("accepts a token expired within the clock-skew window") {
+    validator().validate(sign(claims(expiresIn = -10.seconds))).map { result =>
+      assert(result.isRight, result.toString)
+    }
+  }
+
+  test("rejects a token with no typ header (it must declare at+jwt or JWT)") {
+    val jwt = new com.nimbusds.jwt.SignedJWT(
+      new com.nimbusds.jose.JWSHeader.Builder(
+        com.nimbusds.jose.JWSAlgorithm.RS256
+      )
+        .keyID(signingKey.getKeyID)
+        .build(),
+      claims()
+    )
+    jwt.sign(new com.nimbusds.jose.crypto.RSASSASigner(signingKey))
+    validator()
+      .validate(jwt.serialize())
+      .map(result =>
+        assertEquals(result, Left(AuthError.InvalidToken.Rejected))
+      )
+  }
+
   test("rejects a token from the wrong issuer") {
     validator().validate(sign(claims(iss = "https://evil.example"))).map {
       result =>
@@ -80,6 +103,14 @@ class JwtValidatorSpec extends CatsEffectSuite {
   test("rejects a token missing the required sub claim") {
     validator().validate(sign(claims(sub = null))).map { result =>
       assertEquals(result, Left(AuthError.InvalidToken.Rejected))
+    }
+  }
+
+  test("accepts an M2M token whose sub equals client_id (RFC 9068 §2.2)") {
+    validator().validate(sign(claims(sub = "mobile-app"))).map { result =>
+      val ctx = result.fold(e => fail(s"expected success, got $e"), identity)
+      assertEquals(ctx.subject.value: String, "mobile-app")
+      assertEquals(ctx.clientId.map(c => c.value: String), Some("mobile-app"))
     }
   }
 
@@ -120,12 +151,18 @@ class JwtValidatorSpec extends CatsEffectSuite {
     }
   }
 
-  test("rejects a token without jti when requireTokenId is on") {
-    validator(config.copy(requireTokenId = true))
-      .validate(sign(claims(jti = None)))
-      .map { result =>
-        assertEquals(result, Left(AuthError.InvalidToken.MissingTokenId))
-      }
+  test(
+    "rejects a token without jti when requireTokenId is on (jti not in requiredClaims)"
+  ) {
+    // isolate the requireTokenId knob: drop jti from requiredClaims so Nimbus
+    // doesn't reject first, leaving the requireTokenId check to produce MissingTokenId.
+    val cfg = config.copy(
+      requiredClaims = Set("sub", "exp", "iat"),
+      requireTokenId = true
+    )
+    validator(cfg).validate(sign(claims(jti = None))).map { result =>
+      assertEquals(result, Left(AuthError.InvalidToken.MissingTokenId))
+    }
   }
 
   test("fails closed with ValidationUnavailable when the key source is down") {
@@ -166,12 +203,24 @@ class JwtValidatorSpec extends CatsEffectSuite {
     }
   }
 
-  test("clientId falls back to the azp claim when client_id is absent") {
+  test("rejects a token missing the required client_id claim (RFC 9068)") {
+    val c = new com.nimbusds.jwt.JWTClaimsSet.Builder(claims())
+      .claim("client_id", null)
+      .build()
+    validator().validate(sign(c)).map { result =>
+      assertEquals(result, Left(AuthError.InvalidToken.Rejected))
+    }
+  }
+
+  test("clientId falls back to azp when client_id is not in requiredClaims") {
+    val cfg = config.copy(requiredClaims =
+      Set("sub", "exp", "iat")
+    ) // relaxed: client_id optional
     val c = new com.nimbusds.jwt.JWTClaimsSet.Builder(claims())
       .claim("client_id", null)
       .claim("azp", "svc-account")
       .build()
-    validator().validate(sign(c)).map { result =>
+    validator(cfg).validate(sign(c)).map { result =>
       assertEquals(
         result.map(_.clientId.map(id => id.value: String)),
         Right(Some("svc-account"))

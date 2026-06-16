@@ -119,3 +119,103 @@ The proof is a small JWT the client mints per request, signed with its private k
 - `iat` is fresh (within the max-age window) → not an old proof.
 - `ath` == hash(access token) → the proof is bound to this specific token.
 - `jti` has not been seen before → the proof is used at most once.
+
+
+The proof JWT (the value of the DPoP: header) carries:
+- `htm` = HTTP method → the server compares it against the request's actual method (GET, POST, …).
+- `htu` = HTTP target URI (the endpoint/URL) → the server compares it against the request's actual URL (`scheme + host + path`; query and fragment are stripped first).
+Both must match, or the proof is rejected (`invalid_dpop_proof`).
+
+Why both claims exist: `they bind the proof to one specific operation`. A proof captured for `GET /accounts` can't be replayed as `POST /payments` (wrong `htm` and `htu`), and a proof for `https://api.example.com/...` can't be aimed at a different host. Combined with `ath` (binds to the specific token) and `jti` (one-shot), the proof is pinned to exactly: this method, this URL, this token, once, within the freshness window
+
+`OAuth 2.0 is a framework for delegated authorization, and the access token is the artifact that delegation produces`
+
+The access token is just how that grant is represented and carried
+`the token carries authorization, but verifying the token is genuine is authentication — and you can't act on what a credential permits until you've confirmed the credential is real.`
+
+At the resource server, the first question is: is this token genuine? Real signature from my trusted AS, intact, unexpired, for my audience, (with DPoP/mTLS) presented by the party it's bound to. Verifying that a presented credential is authentic is authentication — the same way checking a password or a client certificate is.
+
+`Checking that the grant is real is authentication; acting on what it permits is authorization. Authorization presupposes authentication `
+
+In our middleware, every DPoP outcome is an authentication outcome:
+- missing / invalid / replayed proof → `invalid_dpop_proof` → 401
+binding violation (bound token presented as Bearer, thumbprint mismatch) → `invalid_token` → 401
+- "must be sender-constrained" → `invalid_token` → 401
+- None of them produce 403 `insufficient_scope`. Authorization failures are 403; DPoP failures are 401.
+
+
+authentication" = proving genuineness (of the client, the request, the flow, the token's possessor, or the user), and "authorization" = defining, scoping, delegating, or revoking what access is granted. Also note where each acts — many strengthen authentication at the authorization server / flow layer, a few at the resource server.
+
+## Strengthen AUTHENTICATION
+
+| Extension | RFC | What it strengthens / where |
+| --- | --- | --- |
+| PKCE | 7636 | Binds code redemption to the client that started the flow (anti code-interception) — flow/request auth at the AS |
+| mTLS | 8705 | Two parts: client auth to the AS via TLS cert and certificate-bound (PoP) access tokens — client + request auth |
+| DPoP | 9449 | Application-layer proof-of-possession; sender-constrains the token — request auth at the RS |
+| cnf confirmation | 7800 | The PoP-binding representation (`jkt`, `x5t#S256`) underpinning DPoP/mTLS — request auth |
+| Assertion framework / JWT / SAML client auth | 7521 / 7523 / 7522 | `private_key_jwt` etc. — client authenticates to the AS with a signed assertion — client auth |
+| PAR (Pushed Authorization Requests) | 9126 | Auth request pushed server-side, tied to an authenticated client, untamperable in the front channel — request authenticity |
+| JAR (JWT-Secured Authorization Request) | 9101 | Signs/encrypts the auth request — request authenticity/integrity |
+| Issuer Identification | 9207 | `iss` in the authz response; defeats AS mix-up — response authenticity |
+| Step-up Authentication Challenge | 9470 | Demands stronger/fresher user auth (`acr`/`max_age`) — user-auth strength |
+| JWT Profile for Access Tokens | 9068 | Structured tokens the RS can authenticate locally (signature/`iss`/`aud`/`exp`) — enables request/token auth |
+| HTTP Message Signatures | 9421 | Signs HTTP messages (used by FAPI) — message/request authenticity |
+| Native Apps BCP | 8252 | Secure the flow (system browser + PKCE) — flow auth |
+| (OIDC Core / ID Token — layered on OAuth) | — | The user-authentication layer OAuth itself omits — user auth |
+
+## Strengthen AUTHORIZATION
+
+| Extension | RFC | What it strengthens / where |
+| --- | --- | --- |
+| Rich Authorization Requests (RAR) | 9396 | `authorization_details` — fine-grained, structured authz beyond scopes — grant precision |
+| Resource Indicators | 8707 | `resource` param → audience-restricted tokens — scopes where a token may be used |
+| Token Exchange | 8693 | Delegation / impersonation (act-as / on-behalf-of) — delegated authz |
+| Token Revocation | 7009 | Client revokes a grant — authz lifecycle (un-grant) |
+| Device Authorization Grant | 8628 | A flow to obtain authorization on input-limited devices — authorization grant |
+
+## Hybrid (do both)
+
+| Extension | RFC | Note |
+| --- | --- | --- |
+| Token Introspection | 7662 | RS asks the AS "is this token active/genuine?" (authentication of the token) and gets its scopes (authorization) |
+| Security BCP | 9700 | Cross-cutting hardening — mandates PKCE, sender-constraining, no implicit, etc. (both sides) |
+| FAPI 1.0 / 2.0 profiles | — | Combine many of the above into a high-assurance profile (both) |
+
+## Supporting / operational (neither directly)
+
+| Extension | RFC | Note |
+| --- | --- | --- |
+| AS Metadata / Discovery | 8414 | How clients discover endpoints/capabilities |
+| Dynamic Client Registration / Management | 7591 / 7592 | Establishes client identity (an authn foundation) but is operational |
+| Bearer Token Usage | 6750 | The baseline request authentication (the weak, stealable form that DPoP/mTLS strengthen) |
+
+The authentication-strengthening extensions cluster around three proof-of-possession ideas — proving the client is real (mTLS/JWT client auth), proving the request/flow is real and untampered (PKCE, PAR, JAR, issuer-id), and proving the token's holder is the bound party (DPoP, mTLS binding, cnf). The authorization-strengthening ones cluster around shaping the grant — making it more precise (RAR), narrower in audience (Resource Indicators), delegable (Token Exchange), or revocable (Revocation). Step-up and sender-constraint policy sit on the authentication side even though they gate access, because what they check is authentication strength, not a permission 
+
+A protocol nails down the exact bytes on the wire so two independent implementations interoperate out of the box (think TLS, HTTP). OAuth 2.0 doesn't do that — it gives you a kit of parts and lets you assemble (and extend) a concrete system.
+
+Here's what's left open, which is exactly what makes it a framework and not a protocol:
+- Multiple grant types, not one handshake. Authorization code, client credentials, refresh, device, implicit (now deprecated) — you pick the flow for your situation. And it defines extension grants (the urn:ietf:params:oauth:grant-type:* mechanism), so brand-new flows like token exchange and CIBA slot in without changing the core. A protocol would specify one exchange.
+- The token format is unspecified. RFC 6749 never says what an access token is — opaque string or JWT, your choice. That's why RFC 9068 (the JWT profile) exists later to fill it in. A protocol would mandate the format.
+- Major details are deferred. How the resource server validates a token, which client-authentication method is used, token lifetimes, what scopes mean — the core mostly leaves these to you, to extensions, or to profiles.
+- Extension points and registries everywhere. New parameters, new endpoints, new token types, new grant types — all have defined places to plug in, backed by IANA registries. The entire list of extensions(PKCE, DPoP, PAR, RAR, mTLS, …) exists because the core was built as a framework with these seams.
+
+The practical consequence: two OAuth deployments can look quite different on the wire and both be valid OAuth — `which means OAuth alone doesn't guarantee interoperability or security`. That gap is exactly why profiles (FAPI 1.0/2.0), OpenID Connect, BCPs (RFC 9700), and OAuth 2.1 exist — they re-tighten the framework into something interoperable and secure for a given context. FAPI, for instance, says "for financial-grade, you must use PKCE + PAR + sender-constrained tokens + these algorithms" — turning the open framework into a pinned-down profile.
+
+the framework design is what lets OAuth serve everything from a CLI script to a banking API — enormous flexibility — but that same underspecification is what produced years of insecure implementations, which the profiles and BCPs now exist to correct.
+
+A protocol is a strict, unambiguous set of rules governing how two systems communicate. It defines the exact bits, bytes, headers, and sequence of operations. There is no room for interpretation. If you deviate from the protocol, the connection fails.
+
+A profile takes a broad, flexible framework (or standard) and aggressively constraints it for a specific industry or use case. Frameworks offer too many choices; a profile makes those choices for you to guarantee security or interoperability in a specific domain.
+
+`without a server nonce, proofs can be pre-generated — their freshness is bounded only by iat/max-age plus single-use. A server nonce ties each proof to a value the server minted just in time, so an attacker can't prepare proofs ahead of capture, and it gives the server tight control over freshness — especially valuable when you can't guarantee cross-node single-use replay protection `
+
+Our `AuthMiddleware` currently produces either an authenticated request or a failure response — it doesn't shape successful responses. Issuing/rotating `DPoP-Nonce` means adding headers to outgoing responses (at minimum the `use_dpop_nonce` 401; ideally rotating on success too), which is a slightly different integration point than pure authentication.
+
+1. RFC 9068 requires both sub and client_id, and says of sub:
+In case the access token is obtained via a grant where a resource owner is not involved, such as the client credentials grant, the value of sub SHOULD correspond to an identifier the authorization server uses to indicate the client application.
+
+2. presence of user-authentication claims (§2.2.1)
+RFC 9068 §2.2.1 ("Authentication Information Claims") defines `auth_time`, `acr`, and `amr` as describing the resource owner's authentication event. They're only meaningful when a user authenticated, and are not included for grants without user authentication (client credentials). So:
+- `auth_time` / `acr` / `amr` present ⇒ a user authenticated.
+all absent ⇒ likely M2M

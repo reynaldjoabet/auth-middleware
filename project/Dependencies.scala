@@ -234,8 +234,7 @@ object Dependencies {
 
   lazy val otel4sCore =
     "org.typelevel" %% "otel4s-core" % Version.otel4s
-  lazy val otel4sOtlp =
-    "org.typelevel" %% "otel4s-otlp" % Version.otel4s
+
   lazy val otelJava = "org.typelevel" %% "otel4s-otelJava" % Version.otel4s
 
   // Logging

@@ -214,3 +214,8 @@ enum ConfirmationClaim {
   case DPoP(jkt: JwkThumbprint)
   case MutualTls(x5tS256: CertificateThumbprint)
 }
+
+type Role = Role.T
+object Role extends RefinedType[String, NonBlank]
+
+val user = Role("user")

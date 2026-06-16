@@ -214,42 +214,84 @@ object BearerAuth {
         )
     }
 
-  /** Step-up authentication (RFC 9470): require that the user authenticated
-    * with one of `acceptableAcrValues` and, if `maxAge` is set, recently
-    * enough. On failure the client receives
-    * `401 insufficient_user_authentication` with the `acr_values` / `max_age`
-    * the authorization server should be asked for — apply to high-risk routes
-    * such as payment initiation or beneficiary changes.
+  /** Require that an end user is present on the token — i.e. reject
+    * machine-to-machine (`client_credentials`) tokens on this route. Apply to
+    * endpoints that act on behalf of a person; leave it off for service/batch
+    * endpoints, which are gated on `client_id` + scopes instead.
+    *
+    * Failure is reported as `401 insufficient_user_authentication` (RFC 9470):
+    * the token is valid, but the route requires a user and the token has none.
+    * `isUserPresent` defaults to [[AuthContext.userPresent]]; override it with
+    * an authorization-server-specific signal if needed.
     */
-  def requireAcr[F[_]: Monad: Clock](
-      acceptableAcrValues: Set[Acr],
-      maxAge: Option[FiniteDuration] = None,
+  def requireUser[F[_]: Monad](
+      isUserPresent: AuthContext => Boolean = AuthContext.userPresent,
       realm: String = "api"
   )(routes: AuthedRoutes[AuthContext, F]): AuthedRoutes[AuthContext, F] =
     Kleisli { req =>
-      val ctx = req.context
-      val acrOk = acceptableAcrValues.isEmpty || ctx.acr.exists(
-        acceptableAcrValues.contains
-      )
+      if (isUserPresent(req.context)) routes(req)
+      else
+        OptionT.pure[F](
+          errorResponse(
+            AuthError.InsufficientUserAuthentication(Set.empty, None),
+            realm,
+            None
+          )
+        )
+    }
+
+  /** Step-up authentication (RFC 9470): require that the user authenticated
+    * with one of the given `acr` values. Takes at least one value (head +
+    * tail), so it can never be a silent no-op — there is no empty-set form that
+    * admits everyone. On failure the client receives
+    * `401 insufficient_user_authentication` with `acr_values`. For "any acr but
+    * recently authenticated" use [[requireFreshAuth]]; compose the two for
+    * "this acr AND recent".
+    *
+    * An M2M token has no `acr` (RFC 9068 §2.2.1), so this also implies a user.
+    */
+  def requireAcr[F[_]: Monad](first: Acr, rest: Acr*)(
+      routes: AuthedRoutes[AuthContext, F]
+  ): AuthedRoutes[AuthContext, F] = {
+    val acceptable = (first +: rest).toSet
+    Kleisli { req =>
+      if (req.context.acr.exists(acceptable.contains)) routes(req)
+      else
+        OptionT.pure[F](
+          errorResponse(
+            AuthError
+              .InsufficientUserAuthentication(acceptable.map(_.value), None),
+            "api",
+            None
+          )
+        )
+    }
+  }
+
+  /** Step-up freshness (RFC 9470): require that the user authenticated within
+    * `maxAge` (via the `auth_time` claim), regardless of `acr`. Since
+    * `auth_time` is a user-authentication claim, this also implies a user is
+    * present. Compose with [[requireAcr]] for "this acr, authenticated within
+    * `maxAge`". On failure the client receives
+    * `401 insufficient_user_authentication` with `max_age`.
+    */
+  def requireFreshAuth[F[_]: Monad: Clock](
+      maxAge: FiniteDuration,
+      realm: String = "api"
+  )(routes: AuthedRoutes[AuthContext, F]): AuthedRoutes[AuthContext, F] =
+    Kleisli { req =>
       OptionT
-        .liftF(maxAge match {
-          case None        => true.pure[F]
-          case Some(limit) =>
-            Clock[F].realTimeInstant.map { now =>
-              ctx.authTime
-                .exists(at => !at.plusSeconds(limit.toSeconds).isBefore(now))
-            }
+        .liftF(Clock[F].realTimeInstant.map { now =>
+          req.context.authTime
+            .exists(at => !at.plusSeconds(maxAge.toSeconds).isBefore(now))
         })
-        .flatMap { freshEnough =>
-          if (acrOk && freshEnough) routes(req)
+        .flatMap { fresh =>
+          if (fresh) routes(req)
           else
             OptionT.pure[F](
               errorResponse(
                 AuthError
-                  .InsufficientUserAuthentication(
-                    acceptableAcrValues.map(_.value),
-                    maxAge
-                  ),
+                  .InsufficientUserAuthentication(Set.empty, Some(maxAge)),
                 realm,
                 None
               )

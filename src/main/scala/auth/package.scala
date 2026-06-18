@@ -54,6 +54,11 @@ type PositiveMinorUnits = Greater[0]
 
 type ParExpiresInSeconds = Positive
 
+// RFC 9470 max_age: a non-negative count of seconds since the last active
+// user-authentication event (0 is RFC-legal — "must have just authenticated").
+type MaxAuthAge = MaxAuthAge.T
+object MaxAuthAge extends RefinedType[Int, Positive0]
+
 // RFC 9126: request_uri is urn:ietf:params:oauth:request_uri:<ref> (or an https URI).
 type RequestUriC =
   Match["^(urn:ietf:params:oauth:request_uri:.+|https://[^#\\s]+)$"]
@@ -153,10 +158,10 @@ enum Amr {
 }
 
 /** Authentication Context Class Reference (`acr`) as received in a token.
-  * Unlike the curated [[com.fintech.auth.types.AcrValue]] enum (which the AS
-  * mints into id tokens), the value an RS sees is an opaque, IdP-defined string
-  * — often a URN such as `urn:openbanking:psd2:sca` — so it is modelled as a
-  * non-blank newtype and compared for equality during step-up.
+  * Unlike the curated [[AcrValue]] enum (which the AS mints into id tokens),
+  * the value an RS sees is an opaque, IdP-defined string — often a URN such as
+  * `urn:openbanking:psd2:sca` — so it is modelled as a non-blank newtype and
+  * compared for equality during step-up.
   */
 type Acr = Acr.T
 object Acr extends RefinedType[String, NonBlank]
@@ -213,6 +218,13 @@ enum HttpMethod {
 enum ConfirmationClaim {
   case DPoP(jkt: JwkThumbprint)
   case MutualTls(x5tS256: CertificateThumbprint)
+}
+
+/** The three outcomes of reading the RFC 7800 `cnf` confirmation. */
+enum Cnf derives CanEqual {
+  case Unbound // no cnf present — not sender-constrained
+  case Bound(claim: ConfirmationClaim) // a well-formed jkt / x5t#S256 binding
+  case Invalid(reason: String) // cnf present but malformed, or both members
 }
 
 type Role = Role.T

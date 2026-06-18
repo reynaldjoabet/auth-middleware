@@ -121,6 +121,13 @@ class DpopSpec extends CatsEffectSuite {
     app().use(_.run(dpopRequest(token, proof)).flatMap(assertDpopRejected))
   }
 
+  test("rejects a proof whose iat is in the future") {
+    val token = sign(dpopBoundClaims())
+    val proof =
+      dpopProof("GET", accountsUri.renderString, token, iatOffset = 10.minutes)
+    app().use(_.run(dpopRequest(token, proof)).flatMap(assertDpopRejected))
+  }
+
   test("rejects a proof whose ath hashes a different access token") {
     val token = sign(dpopBoundClaims())
     val proof = dpopProof(
@@ -236,6 +243,14 @@ class DpopSpec extends CatsEffectSuite {
       ).map { resp =>
         assertEquals(resp.status, Status.Ok)
       }
+    )
+  }
+
+  test(
+    "DpopConfig rejects a non-EC/RSA algorithm (EdDSA, unsupported by the Nimbus verifier)"
+  ) {
+    intercept[IllegalArgumentException](
+      DpopConfig(allowedAlgorithms = Set(com.nimbusds.jose.JWSAlgorithm.EdDSA))
     )
   }
 

@@ -219,3 +219,132 @@ In case the access token is obtained via a grant where a resource owner is not i
 RFC 9068 §2.2.1 ("Authentication Information Claims") defines `auth_time`, `acr`, and `amr` as describing the resource owner's authentication event. They're only meaningful when a user authenticated, and are not included for grants without user authentication (client credentials). So:
 - `auth_time` / `acr` / `amr` present ⇒ a user authenticated.
 all absent ⇒ likely M2M
+
+`an access token is about authorization, but authorization decisions can legitimately depend on how the user authenticated. acr/amr carry that authentication context so the resource server can make those decisions.`
+
+## step-up authentication
+`acr`: Authentication Context Class Reference
+`acr_values`:parameter sent to the idp in the OIDC authorization request to tell the identity provider which authentication flow to use
+`acr_values` (what you asked for) ≠ the `acr` claim (what you got). The IdP is not obligated to honor `acr_values`
+
+`amr`: Authentication Methods References- is consumed inbound,after identity provider authenticates user.The value of `amr` claim is read from the token to determine how the user authenticated.A JSON array of strings, each naming one method that was used: `["pwd", "otp"]`, `["mfa", "hwk"]`, `["pwd", "mfa", "sms"]`. (Defined in RFC 8176, which registers values like `pwd`, `otp`, `sms`, `hwk`, `swk`, `fpt` (fingerprint), `face`, `pin`, `mfa`.)
+
+![alt text](image.png)
+
+ It is not uncommon for resource servers to require different authentication strengths or recentness according to the
+   characteristics of a request
+
+>>>
+In simple API authorization scenarios, an authorization server will determine what authentication technique to use to handle a given request on the basis of aspects such as the scopes requested, the resource, the identity of the client, and other characteristics known at provisioning time.  Although that approach is viable in many situations, it falls short in several important circumstances. Consider, for instance, an eCommerce API requiring different authentication strengths depending on whether the item being purchased exceeds a certain threshold, dynamically estimated by the API itself using a logic that is opaque to the authorization server. An API might also determine that a more recent user authentication is required based on its own risk evaluation of the API request   
+
+`insufficient_user_authentication`can be used by resource servers to signal to the client that the authentication event associated with the access token presented withthe request does not meet the authentication requirements of the resource server. `acr_values` and `max_age` parameters for the Bearer authentication scheme challenge defined by [RFC6750] can be used by the resource server to explicitly communicate to the client the required authentication
+   strength or recentness.
+
+The client can use that information to reach back to the
+authorization server with an authorization request that specifies the authentication requirements indicated by the protected resource. This is accomplished by including the `acr_values` or `max_age` authorization request parameters as defined in [OIDC]
+
+## Protocol Overview
+The following is an end-to-end sequence of a typical step up authentication scenario implemented according to this specification.
+The scenario assumes that, before the sequence described below takes
+place, the client already obtained an access token for the protected
+resource.
+```sh
+  +----------+                                          +--------------+
+  |          |                                          |              |
+  |          |-----------(1) request ------------------>|              |
+  |          |                                          |              |
+  |          |<---------(2) challenge ------------------|   Resource   |
+  |          |                                          |    Server    |
+  |  Client  |                                          |              |
+  |          |-----------(5) request ------------------>|              |
+  |          |                                          |              |
+  |          |<-----(6) protected resource -------------|              |
+  |          |                                          +--------------+
+  |          |
+  |          |
+  |          |  +-------+                              +---------------+
+  |          |->|       |                              |               |
+  |          |  |       |--(3) authorization request-->|               |
+  |          |  | User  |                              |               |
+  |          |  | Agent |<-----------[...]------------>| Authorization |
+  |          |  |       |                              |     Server    |
+  |          |<-|       |                              |               |
+  |          |  +-------+                              |               |
+  |          |                                         |               |
+  |          |<-------- (4) access token --------------|               |
+  |          |                                         |               |
+  +----------+                                         +---------------+
+```
+
+1. The client requests a protected resource, presenting an access token.
+2. The resource server determines that the circumstances in which
+the presented access token was obtained offer `insufficientauthentication` strength and/or recentness; hence, it denies the request and returns a challenge describing (using a combination of `acr_values` and `max_age`) what authentication requirements must be met for the resource server to authorize a request.
+3. The client directs the user agent to the authorization server
+with an authorization request that includes the `acr_values` and/or
+`max_age` indicated by the resource server in the previous step.
+4. Whatever sequence required by the grant of choice plays out; this
+will include the necessary steps to authenticate the user in
+accordance with the `acr_values` and/or `max_age` values of the
+authorization request.  Then, the authorization server returns a
+new access token to the client.  The new access token contains or
+references information about the authentication event.
+5. The client repeats the request from step 1, presenting the newly obtained access token.
+6. The resource server finds that the user authentication performed during the acquisition of the new access token complies with its requirements and returns the representation of the requested protected resource.
+
+The validation operations mentioned in steps 2 and 6 imply that the resource server has a way of evaluating the authentication that occurred during the process by which the access token was obtained. the assessment by the resource server of the specific authentication method used to obtain a token for the requested resource is called an "authentication level". When presented with a token derived from a particular authentication method (i.e., a given authentication level) that it does not want to accept (i.e., below the threshold or level it will accept), the resource server seeks to step up (i.e.,renegotiate) from the current authentication level to one that it may accept
+
+`insufficient_user_authentication`:  The authentication event associated with the access token presented with the request does not meet the authentication requirements of the protected resource
+
+`acr_values`: A space-separated string listing the authentication context class reference values in order of preference.  The protected resource requires one of these values for the authentication event associated with the access token. As defined in Section 1.2 of [OIDC], the authentication context conveys information about how authentication takes place (e.g., what authentication method(s) or assurance level to meet).
+
+`max_age`:  This value indicates the allowable elapsed time in seconds since the last active authentication event associated with the access token.  An active authentication event entails a user interacting with the authorization server in response to an authentication prompt.  Note that, while the auth-param value can be conveyed as a token or quoted-string (see Section 11.2 of [RFC9110]), it has to represent a non-negative integer
+
+The auth-params `max_age` and `acr_values` MAY both occur in the same challenge if the resource server needs to express requirements about both recency and authentication level.  If the resource server determines that the request is also lacking the scopes required by the requested resource, it MAY include the scope attribute with the value necessary to access the protected resource, as described in Section 3.1 of [RFC6750]
+
+## Authorization Request
+A client receiving a challenge from the resource server carrying the
+`insufficient_user_authentication` error code SHOULD parse the WWW-
+Authenticate header for `acr_values` and `max_age` and use them, if
+present, in constructing an authorization request.  This request is
+then conveyed to the authorization server's authorization endpoint
+via the user agent in order to obtain a new access token complying
+with the corresponding requirements.  The `acr_values` and `max_age`
+authorization request parameters are both OPTIONAL parameters defined
+in Section 3.1.2.1. of [OIDC]. This document does not introduce any
+changes in the authorization server behavior defined in [OIDC] for
+processing those parameters; hence, any authorization server implementing OpenID Connect will be able to participate in the flow described here with little or no changes. See Section 5 for more details
+
+## Authorization Response
+
+Section 5.5.1.1 of [OIDC] establishes that an authorization server
+receiving a request containing the `acr_values` parameter MAY attempt
+to authenticate the user in a manner that satisfies the requested
+authentication context class reference and include the corresponding
+value in the acr claim in the resulting ID Token.  The same section
+also establishes that, in case the desired authentication level
+cannot be met, the authorization server SHOULD include a value
+reflecting the authentication level of the current session (if any)
+in the acr claim.  Furthermore, Section 3.1.2.1 [OIDC] states that if
+a request includes the `max_age` parameter, the authorization server
+MUST include the `auth_time` claim in the issued ID Token.  An
+authorization server complying with this specification will react to
+the presence of the `acr_values` and `max_age` parameters by including
+`acr` and `auth_time` in the access token (see Section 6 for details).
+Although [OIDC] leaves the authorization server free to decide how to
+handle the inclusion of acr in the ID Token when requested via
+`acr_values`, when it comes to access tokens in this specification, the
+authorization server SHOULD consider the requested `acr` value as necessary for successfully fulfilling the request.  That is, the requested `acr` value is included in the access token if the
+authentication operation successfully met its requirements; otherwise, the authorization request fails and returns an `unmet_authentication_requirements` error as defined in [OIDCUAR].  The recommended behavior will help prevent clients getting stuck in a loop where the authorization server keeps returning tokens that the resource server already identified as not meeting its requirements
+
+This document MUST NOT be used to position OAuth as an authentication
+protocol.`For the purposes of this specification, the way in which a user authenticated with the authorization server to obtain an access token is salient information, as a resource server might decide whether to grant access on the basis of how that authentication operation was performed`
+
+## Authentication Information Claims
+The claims listed in this section MAY be issued in the context of authorization grants involving the resource owner and reflect the types and strength of authentication in the access token that the authentication server enforced prior to returning the authorization response to the client. Their values are fixed and remain the same across all access tokens that derive from a given authorization response, whether the access token was obtained directly in the response (e.g., via the implicit flow) or after one or more token exchanges (e.g., obtaining a fresh access token using a refresh token or exchanging one access token for another via [RFC8693] procedures).
+
+auth_time
+    OPTIONAL - as defined in Section 2 of [OpenID.Core]. 
+acr
+    OPTIONAL - as defined in Section 2 of [OpenID.Core]. 
+amr
+    OPTIONAL - as defined in Section 2 of [OpenID.Core].

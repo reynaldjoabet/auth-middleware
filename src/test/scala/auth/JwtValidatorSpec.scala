@@ -7,6 +7,7 @@ import com.nimbusds.jose.proc.SecurityContext
 import com.nimbusds.jose.jwk.source.JWKSource
 import com.nimbusds.jose.jwk.{JWK, JWKSelector}
 import com.nimbusds.jose.{JOSEObjectType, KeySourceException}
+import com.nimbusds.jwt.JWTClaimsSet
 import io.github.iltotore.iron.*
 import munit.CatsEffectSuite
 
@@ -20,6 +21,54 @@ class JwtValidatorSpec extends CatsEffectSuite {
     JwtValidator
       .fromKeySource[IO](cfg, keySource, AuthEvents.noop[IO], denylist)
 
+  // The default token claims minus the named claim(s), to exercise the RFC 9068
+  // §2.2 required-claims check. Round-trips through the JSON object so the key is
+  // genuinely absent (Nimbus rejects a missing required claim before our own
+  // checks run, surfacing as a generic invalid_token).
+  private def claimsWithout(drop: String*): JWTClaimsSet = {
+    val json = claims().toJSONObject
+    drop.foreach(c => json.remove(c))
+    JWTClaimsSet.parse(json)
+  }
+
+  // Test events sink capturing the internal detail of each failure, so the
+  // omission tests can assert the specific Nimbus message (which the validator
+  // routes to authFailed's internalDetail, not into the client-facing AuthError).
+  private final class CapturingEvents extends AuthEvents[IO] {
+    private val buf = scala.collection.mutable.ListBuffer.empty[String]
+    def authSucceeded(ctx: AuthContext): IO[Unit] = IO.unit
+    def authFailed(error: AuthError, internalDetail: String): IO[Unit] =
+      IO(buf += internalDetail)
+    def details: List[String] = buf.toList
+  }
+
+  // Each default required claim missing, then 2, 3, 4, and all of them. Every
+  // case must be rejected as invalid_token, and the internal detail must name
+  // exactly the missing claims — Nimbus reports them sorted (TreeSet). Default
+  // requiredClaims = sub, exp, iat, client_id, jti; iss/aud stay present so the
+  // reported missing set is exactly what we drop.
+  (List("sub", "exp", "iat", "client_id", "jti").map(List(_)) ::: List(
+    List("exp", "iat"),
+    List("exp", "iat", "jti"),
+    List("sub", "exp", "iat", "client_id"),
+    List("sub", "exp", "iat", "client_id", "jti")
+  )).foreach { drop =>
+    test(s"rejects a token missing required claim(s): ${drop.mkString(", ")}") {
+      val events = new CapturingEvents
+      val v = JwtValidator
+        .fromKeySource[IO](config, keySource, events, TokenDenylist.none[IO])
+      v.validate(sign(claimsWithout(drop*))).map { result =>
+        assertEquals(result, Left(AuthError.InvalidToken.Rejected))
+        assertEquals(
+          events.details,
+          List(
+            s"JWT missing required claims: ${drop.sorted.mkString("[", ", ", "]")}"
+          )
+        )
+      }
+    }
+  }
+
   test("accepts a valid token and exposes subject, client, scopes and jti") {
     validator().validate(sign(claims())).map { result =>
       val ctx = result.fold(e => fail(s"expected success, got $e"), identity)
@@ -30,6 +79,14 @@ class JwtValidatorSpec extends CatsEffectSuite {
         Set("accounts:read", "payments:read")
       )
       assertEquals(ctx.tokenId.map(j => j.value: String), Some("jti-abc"))
+    }
+  }
+
+  test("hasScope reflects the token's granted scopes") {
+    validator().validate(sign(claims())).map { result =>
+      val ctx = result.fold(e => fail(s"expected success, got $e"), identity)
+      assert(ctx.hasScope(ScopeToken("accounts:read")))
+      assert(!ctx.hasScope(ScopeToken("admin:all")))
     }
   }
 
@@ -151,17 +208,24 @@ class JwtValidatorSpec extends CatsEffectSuite {
     }
   }
 
+  test("rejects a token with no jti (jti is required by default)") {
+    validator().validate(sign(claims(jti = None))).map { result =>
+      assertEquals(result, Left(AuthError.InvalidToken.Rejected))
+    }
+  }
+
   test(
-    "rejects a token without jti when requireTokenId is on (jti not in requiredClaims)"
+    "a token with no jti skips the denylist when jti is relaxed out of requiredClaims"
   ) {
-    // isolate the requireTokenId knob: drop jti from requiredClaims so Nimbus
-    // doesn't reject first, leaving the requireTokenId check to produce MissingTokenId.
-    val cfg = config.copy(
-      requiredClaims = Set("sub", "exp", "iat"),
-      requireTokenId = true
-    )
-    validator(cfg).validate(sign(claims(jti = None))).map { result =>
-      assertEquals(result, Left(AuthError.InvalidToken.MissingTokenId))
+    val cfg = config.copy(requiredClaims = Set("sub", "exp", "iat"))
+    val denyAll = new TokenDenylist[IO] {
+      def isRevoked(tokenId: String): IO[Boolean] = IO.pure(true)
+    }
+    validator(cfg, denyAll).validate(sign(claims(jti = None))).map { result =>
+      assert(
+        result.isRight,
+        result.toString
+      ) // no jti -> nothing to look up -> accepted
     }
   }
 
@@ -201,6 +265,18 @@ class JwtValidatorSpec extends CatsEffectSuite {
         java.net.URI.create("http://auth.test.example/jwks")
       )
     }
+  }
+
+  test("AuthConfig rejects an HMAC signing algorithm") {
+    intercept[IllegalArgumentException] {
+      config.copy(allowedAlgorithms = Set(com.nimbusds.jose.JWSAlgorithm.HS256))
+    }
+  }
+
+  test("AuthConfig rejects an empty algorithm set") {
+    intercept[IllegalArgumentException](
+      config.copy(allowedAlgorithms = Set.empty)
+    )
   }
 
   test("rejects a token missing the required client_id claim (RFC 9068)") {
@@ -254,10 +330,25 @@ class JwtValidatorSpec extends CatsEffectSuite {
     }
   }
 
-  test("drops a malformed cnf.jkt (no sender-constraint binding)") {
+  test("rejects a present-but-malformed cnf.jkt (fails closed, no downgrade)") {
     validator().validate(sign(dpopBoundClaims(jkt = "too-short"))).map {
       result =>
-        assertEquals(result.map(_.confirmation), Right(None))
+        assertEquals(result, Left(AuthError.InvalidToken.Rejected))
+    }
+  }
+
+  test("rejects a present-but-malformed cnf.x5t#S256 (fails closed)") {
+    validator().validate(sign(mtlsBoundClaims("too-short"))).map { result =>
+      assertEquals(result, Left(AuthError.InvalidToken.Rejected))
+    }
+  }
+
+  test("rejects a cnf carrying both jkt and x5t#S256") {
+    val cnf = new com.nimbusds.jwt.JWTClaimsSet.Builder(claims())
+      .claim("cnf", java.util.Map.of("jkt", dpopJkt, "x5t#S256", dpopJkt))
+      .build()
+    validator().validate(sign(cnf)).map { result =>
+      assertEquals(result, Left(AuthError.InvalidToken.Rejected))
     }
   }
 

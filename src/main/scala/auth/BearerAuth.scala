@@ -1,7 +1,5 @@
 package auth
 
-import scala.concurrent.duration.FiniteDuration
-
 import cats.Monad
 import cats.data.{EitherT, Kleisli, OptionT}
 import cats.effect.Clock
@@ -233,7 +231,7 @@ object BearerAuth {
       else
         OptionT.pure[F](
           errorResponse(
-            AuthError.InsufficientUserAuthentication(Set.empty, None),
+            AuthError.InsufficientUserAuthentication(Seq.empty, None),
             realm,
             None
           )
@@ -251,17 +249,24 @@ object BearerAuth {
     * An M2M token has no `acr` (RFC 9068 §2.2.1), so this also implies a user.
     */
   def requireAcr[F[_]: Monad](first: Acr, rest: Acr*)(
-      routes: AuthedRoutes[AuthContext, F]
+      routes: AuthedRoutes[AuthContext, F],
+      realm: String = "api"
   ): AuthedRoutes[AuthContext, F] = {
-    val acceptable = (first +: rest).toSet
+    // Preserve declared order (RFC 9470 §3 acr_values are "in order of
+    // preference") and dedup. `acr` is a single Option, so the predicate runs
+    // at most once per request over a handful of values — a plain Seq.contains
+    // is fine, no Set needed.
+    val requiredAcrValues = (first +: rest).distinct
     Kleisli { req =>
-      if (req.context.acr.exists(acceptable.contains)) routes(req)
+      if (req.context.acr.exists(requiredAcrValues.contains)) routes(req)
       else
         OptionT.pure[F](
           errorResponse(
-            AuthError
-              .InsufficientUserAuthentication(acceptable.map(_.value), None),
-            "api",
+            AuthError.InsufficientUserAuthentication(
+              requiredAcrValues.map(a => a.value: String),
+              None
+            ),
+            realm,
             None
           )
         )
@@ -276,14 +281,14 @@ object BearerAuth {
     * `401 insufficient_user_authentication` with `max_age`.
     */
   def requireFreshAuth[F[_]: Monad: Clock](
-      maxAge: FiniteDuration,
+      maxAge: MaxAuthAge,
       realm: String = "api"
   )(routes: AuthedRoutes[AuthContext, F]): AuthedRoutes[AuthContext, F] =
     Kleisli { req =>
       OptionT
         .liftF(Clock[F].realTimeInstant.map { now =>
           req.context.authTime
-            .exists(at => !at.plusSeconds(maxAge.toSeconds).isBefore(now))
+            .exists(at => !at.plusSeconds(maxAge.value.toLong).isBefore(now))
         })
         .flatMap { fresh =>
           if (fresh) routes(req)
@@ -291,13 +296,31 @@ object BearerAuth {
             OptionT.pure[F](
               errorResponse(
                 AuthError
-                  .InsufficientUserAuthentication(Set.empty, Some(maxAge)),
+                  .InsufficientUserAuthentication(Seq.empty, Some(maxAge)),
                 realm,
                 None
               )
             )
         }
     }
+
+  /** Adds an ACR step-up authorization check requiring `mfaAcr` (multi-factor
+    * auth; defaults to `acr3`). Enforces authentication recency (default 5
+    * minutes) per NIST SP 800-63B. Returns a `WWW-Authenticate` challenge (`401
+    * insufficient_user_authentication`) when step-up is required.
+    *
+    * A convenience preset composing [[requireAcr]] over [[requireFreshAuth]].
+    * Because the two gates short-circuit independently, a token failing both
+    * receives the `acr_values` challenge first and the `max_age` challenge on
+    * retry; if you need both in a single challenge, aggregate the requirements
+    * instead.
+    */
+  def requireMfa[F[_]: Monad: Clock](
+      mfaAcr: Acr = Acr("acr3"),
+      maxAge: MaxAuthAge = MaxAuthAge(300),
+      realm: String = "api"
+  )(routes: AuthedRoutes[AuthContext, F]): AuthedRoutes[AuthContext, F] =
+    requireAcr(mfaAcr)(requireFreshAuth(maxAge, realm)(routes), realm)
 
   private def extractCredentials[F[_]](
       req: Request[F],
@@ -370,10 +393,14 @@ object BearerAuth {
       case AuthError.InsufficientUserAuthentication(acrValues, maxAge) =>
         val description =
           "stronger or more recent user authentication is required"
+        // Emit acr_values in the caller's preference order (RFC 9470 §3); do
+        // not sort. max_age is a MaxAuthAge, so non-negativity (RFC 9470 §3) is
+        // guaranteed by the type — no runtime clamp needed.
         val acrParam =
           if (acrValues.isEmpty) ""
-          else s""", acr_values="${acrValues.toSeq.sorted.mkString(" ")}""""
-        val maxAgeParam = maxAge.fold("")(d => s", max_age=${d.toSeconds}")
+          else s""", acr_values="${acrValues.mkString(" ")}""""
+        val maxAgeParam =
+          maxAge.fold("")(m => s", max_age=${m.value}")
         challengeResponse(
           Status.Unauthorized,
           bearer(

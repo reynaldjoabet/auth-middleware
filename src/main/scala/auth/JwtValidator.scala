@@ -129,12 +129,15 @@ object JwtValidator {
             case Left(other) => Sync[F].raiseError(other)
           }
 
+    // `jti` presence is governed solely by `config.requiredClaims` (Nimbus rejects
+    // a missing required claim before we get here). A token reaching this point
+    // with no `jti` therefore has `jti` deliberately optional, so there is nothing
+    // to look up — keep `"jti"` in requiredClaims (the default does) so tokens
+    // cannot dodge the denylist by omitting it.
     private def checkDenylist(
         claims: JWTClaimsSet
     ): F[Either[AuthError, AuthContext]] =
       Option(claims.getJWTID) match {
-        case None if config.requireTokenId =>
-          reject(AuthError.InvalidToken.MissingTokenId, "jti absent")
         case None =>
           accept(claims)
         case Some(jti) =>
@@ -150,6 +153,9 @@ object JwtValidator {
     ): F[Either[AuthError, AuthContext]] = {
       val built: Either[(AuthError, String), AuthContext] =
         for {
+          // `sub` is required (RFC 9068 §2.2 — present even for client_credentials,
+          // where it equals the client_id). Its presence is also enforced by
+          // Nimbus via `config.requiredClaims`.
           sub <- Option(claims.getSubject)
             .toRight((AuthError.InvalidToken.Rejected, "missing sub claim"))
           subject <- Subject
@@ -163,6 +169,13 @@ object JwtValidator {
                 .either(j)
                 .bimap(m => (AuthError.InvalidToken.Rejected, m), Some(_))
           }
+          // Fail closed on a present-but-malformed cnf: never silently downgrade a
+          // sender-constrained token to an unbound one.
+          confirmation <- confirmationOf(claims) match {
+            case Cnf.Unbound    => Right(None)
+            case Cnf.Bound(c)   => Right(Some(c))
+            case Cnf.Invalid(r) => Left((AuthError.InvalidToken.Rejected, r))
+          }
         } yield AuthContext(
           subject = subject,
           clientId = stringClaim(claims, "client_id")
@@ -173,7 +186,7 @@ object JwtValidator {
           expiresAt = claims.getExpirationTime.toInstant,
           acr = stringClaim(claims, "acr").flatMap(Acr.option),
           authTime = dateClaim(claims, "auth_time"),
-          confirmation = confirmationOf(claims),
+          confirmation = confirmation,
           claims = claims
         )
       built match {
@@ -182,22 +195,37 @@ object JwtValidator {
       }
     }
 
-    /** RFC 7800 `cnf` confirmation, parsed by the Nimbus SDK: `jkt` (DPoP, RFC
-      * 9449) or `x5t#S256` (mTLS, RFC 8705). A thumbprint that is present but
-      * not a well-formed base64url SHA-256 value is dropped (treated as no
-      * binding); enforcement happens in the middleware, which has the request.
+    /** Read the `cnf` confirmation (Nimbus-parsed): `jkt` (DPoP, RFC 9449) or
+      * `x5t#S256` (mTLS, RFC 8705). A present-but-malformed `cnf` is reported
+      * as [[Cnf.Invalid]] so a broken binding fails closed rather than silently
+      * downgrading to an unbound token. Enforcement of the binding itself
+      * happens in the middleware, which has access to the request.
       */
-    private def confirmationOf(
-        claims: JWTClaimsSet
-    ): Option[ConfirmationClaim] =
-      Option(JWKThumbprintConfirmation.parse(claims))
-        .flatMap(c => JwkThumbprint.option(c.getValue.toString))
-        .map(ConfirmationClaim.DPoP(_))
-        .orElse(
-          Option(X509CertificateConfirmation.parse(claims))
-            .flatMap(c => CertificateThumbprint.option(c.getValue.toString))
-            .map(ConfirmationClaim.MutualTls(_))
-        )
+    private def confirmationOf(claims: JWTClaimsSet): Cnf = {
+      val jkt =
+        Option(JWKThumbprintConfirmation.parse(claims)).map(_.getValue.toString)
+      val x5t = Option(X509CertificateConfirmation.parse(claims))
+        .map(_.getValue.toString)
+      (jkt, x5t) match {
+        case (None, None)    => Cnf.Unbound
+        case (Some(j), None) =>
+          JwkThumbprint.option(j) match {
+            case Some(t) => Cnf.Bound(ConfirmationClaim.DPoP(t))
+            case None    =>
+              Cnf.Invalid("cnf.jkt is not a valid base64url SHA-256 thumbprint")
+          }
+        case (None, Some(c)) =>
+          CertificateThumbprint.option(c) match {
+            case Some(t) => Cnf.Bound(ConfirmationClaim.MutualTls(t))
+            case None    =>
+              Cnf.Invalid(
+                "cnf.x5t#S256 is not a valid base64url SHA-256 thumbprint"
+              )
+          }
+        case (Some(_), Some(_)) =>
+          Cnf.Invalid("cnf carries both jkt and x5t#S256")
+      }
+    }
 
     private def reject(
         error: AuthError,

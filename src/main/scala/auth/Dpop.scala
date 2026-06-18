@@ -66,7 +66,7 @@ final case class DpopConfig(
   require(maxProofLength > 0, "maxProofLength must be positive")
 }
 
-/** Validates DPoP proofs (RFC 9449) presented alongside DPoP-bound access
+/** Verifies DPoP proofs (RFC 9449) presented alongside DPoP-bound access
   * tokens.
   */
 trait DpopVerifier[F[_]] {

@@ -1,7 +1,5 @@
 package auth
 
-import scala.concurrent.duration.FiniteDuration
-
 /** Outcome of a failed authentication or authorization check.
   *
   * The `reason` strings carried here are fixed, library-controlled values: they
@@ -40,10 +38,14 @@ enum AuthError derives CanEqual {
   /** The token is valid but the user's authentication does not meet the route's
     * step-up requirements (`acr` value and/or `auth_time` freshness). RFC 9470
     * `insufficient_user_authentication`.
+    *
+    * `acrValues` is ordered by preference (RFC 9470 §3: the `acr_values`
+    * challenge parameter lists values "in order of preference"), so it is a
+    * `Seq`, not a `Set`.
     */
   case InsufficientUserAuthentication(
-      acrValues: Set[String],
-      maxAge: Option[FiniteDuration]
+      acrValues: Seq[String],
+      maxAge: Option[MaxAuthAge]
   )
 
   /** Validation could not be performed at all (for example the JWKS endpoint
@@ -77,8 +79,6 @@ object AuthError {
       )
     val Revoked: AuthError.InvalidToken =
       AuthError.InvalidToken("token has been revoked")
-    val MissingTokenId: AuthError.InvalidToken =
-      AuthError.InvalidToken("token is missing a jti claim")
     val WrongScheme: AuthError.InvalidToken =
       AuthError.InvalidToken(
         "unsupported authorization scheme, expected Bearer"

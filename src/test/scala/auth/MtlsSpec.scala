@@ -118,4 +118,36 @@ class MtlsSpec extends CatsEffectSuite {
         assertEquals(resp.status, Status.Ok)
       }
   }
+
+  test(
+    "accepts a certificate-bound token via the TLS session (fromTlsSession)"
+  ) {
+    val tlsApp = BearerAuth
+      .middleware(
+        validator,
+        AuthEvents.noop[IO],
+        clientCertificates = Some(ClientCertificates.fromTlsSession[IO])
+      )
+      .apply(routes)
+      .orNotFound
+    val session = org.http4s.server.SecureSession(
+      "sid",
+      "TLS_AES_128_GCM_SHA256",
+      128,
+      List(clientCert)
+    )
+    val req = Request[IO](Method.GET, uri"/accounts")
+      .putHeaders(
+        Header
+          .Raw(ci"Authorization", s"Bearer ${sign(mtlsBoundClaims(x5tS256))}")
+      )
+      .withAttribute(
+        org.http4s.server.ServerRequestKeys.SecureSession,
+        Option(session)
+      )
+    tlsApp.run(req).flatMap { resp =>
+      assertEquals(resp.status, Status.Ok)
+      resp.as[String].assertEquals("user-123")
+    }
+  }
 }

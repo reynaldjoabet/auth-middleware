@@ -34,4 +34,22 @@ class AuditSpec extends CatsEffectSuite {
       assertEquals(records(1).subject, None)
     }
   }
+
+  test("outcomeCode maps every AuthError variant to its stable code") {
+    val cases: List[(AuthError, String)] = List(
+      AuthError.MissingToken -> "missing_token",
+      AuthError.InvalidRequest.TokenInQuery -> "invalid_request",
+      AuthError.InvalidToken.Rejected -> "invalid_token",
+      AuthError.InvalidDpopProof.Missing -> "invalid_dpop_proof",
+      AuthError.InsufficientScope(
+        Set("payments:write")
+      ) -> "insufficient_scope",
+      AuthError.InsufficientUserAuthentication(Seq.empty, None) ->
+        "insufficient_user_authentication",
+      AuthError.ValidationUnavailable -> "validation_unavailable"
+    )
+    cases.foreach { case (err, code) =>
+      assertEquals(outcomeCode(err), code, s"for $err")
+    }
+  }
 }

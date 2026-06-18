@@ -16,6 +16,11 @@ import org.http4s.{
 }
 import org.typelevel.ci.*
 
+import com.nimbusds.jose.KeySourceException
+import com.nimbusds.jose.jwk.{JWK, JWKSelector}
+import com.nimbusds.jose.jwk.source.JWKSource
+import com.nimbusds.jose.proc.SecurityContext
+
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
 
@@ -28,8 +33,8 @@ class BearerAuthSpec extends CatsEffectSuite {
   // -- fixtures ------------------------------------------------------------
   // All fields are declared before the first `test(...)` so that `this` is
   // fully initialized when each test closure is registered in the
-  // constructor; otherwise Scala 3's init checker warns about closures
-  // capturing a partially-initialized `this`.
+  // constructor; otherwise -Ysafe-init warns about closures capturing a
+  // partially-initialized `this`.
 
   private val validator =
     JwtValidator.fromKeySource[IO](
@@ -74,14 +79,14 @@ class BearerAuthSpec extends CatsEffectSuite {
     BearerAuth.requireAcr[IO](sca)(paymentRoutes)
   ).orNotFound
   // strength + freshness, composed
-  private def freshAcrApp(maxAge: scala.concurrent.duration.FiniteDuration) =
+  private def freshAcrApp(maxAge: MaxAuthAge) =
     authMiddleware(
       BearerAuth.requireAcr[IO](sca)(
         BearerAuth.requireFreshAuth[IO](maxAge)(paymentRoutes)
       )
     ).orNotFound
   // freshness only (any acr)
-  private def freshApp(maxAge: scala.concurrent.duration.FiniteDuration) =
+  private def freshApp(maxAge: MaxAuthAge) =
     authMiddleware(
       BearerAuth.requireFreshAuth[IO](maxAge)(paymentRoutes)
     ).orNotFound
@@ -229,6 +234,14 @@ class BearerAuthSpec extends CatsEffectSuite {
     paymentsApp.run(req).map(resp => assertEquals(resp.status, Status.Ok))
   }
 
+  test("requireScopes with no required scopes admits any authenticated token") {
+    val openApp =
+      authMiddleware(BearerAuth.requireScopes[IO](Set.empty)(routes)).orNotFound
+    openApp
+      .run(get("/accounts", Some(sign(claims()))))
+      .map(resp => assertEquals(resp.status, Status.Ok))
+  }
+
   test("200 when the token carries all of several required scopes") {
     val token = sign(claims(scope = Some("accounts:read payments:write")))
     val req = Request[IO](Method.POST, uri"/payments")
@@ -248,6 +261,24 @@ class BearerAuthSpec extends CatsEffectSuite {
         challenge.contains("""scope="accounts:read payments:write""""),
         challenge
       )
+    }
+  }
+
+  test(
+    "requireScopes: a custom realm appears in the insufficient_scope challenge"
+  ) {
+    val customApp = authMiddleware(
+      BearerAuth
+        .requireScopes[IO](Set(ScopeToken("payments:write")), realm = "bank")(
+          paymentRoutes
+        )
+    ).orNotFound
+    customApp.run(payment(sign(claims()))).map { resp =>
+      assertEquals(resp.status, Status.Forbidden)
+      val challenge =
+        resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
+      assert(challenge.contains("""realm="bank""""), challenge)
+      assert(challenge.contains("""error="insufficient_scope""""), challenge)
     }
   }
 
@@ -280,6 +311,37 @@ class BearerAuthSpec extends CatsEffectSuite {
 
   test("authentication error responses carry Cache-Control: no-store") {
     app.run(get("/accounts", None)).map { resp =>
+      assertEquals(
+        resp.headers.get(ci"Cache-Control").map(_.head.value),
+        Some("no-store")
+      )
+    }
+  }
+
+  test(
+    "503 with Retry-After (fail closed) when the key source is unavailable"
+  ) {
+    val downSource = new JWKSource[SecurityContext] {
+      def get(
+          selector: JWKSelector,
+          ctx: SecurityContext
+      ): java.util.List[JWK] =
+        throw new KeySourceException("JWKS endpoint unreachable")
+    }
+    val downValidator = JwtValidator.fromKeySource[IO](
+      config,
+      downSource,
+      AuthEvents.noop[IO],
+      TokenDenylist.none[IO]
+    )
+    val downMw = BearerAuth.middleware(downValidator, AuthEvents.noop[IO])
+    val downApp = downMw(routes).orNotFound
+    downApp.run(get("/accounts", Some(sign(claims())))).map { resp =>
+      assertEquals(resp.status, Status.ServiceUnavailable)
+      assertEquals(
+        resp.headers.get(ci"Retry-After").map(_.head.value),
+        Some("5")
+      )
       assertEquals(
         resp.headers.get(ci"Cache-Control").map(_.head.value),
         Some("no-store")
@@ -335,10 +397,74 @@ class BearerAuthSpec extends CatsEffectSuite {
   }
 
   test(
+    "requireAcr: a token whose acr matches a non-first acceptable value -> 200"
+  ) {
+    import scala.concurrent.duration.*
+    val app = authMiddleware(
+      BearerAuth.requireAcr[IO](Acr("loa2"), Acr("loa3"))(paymentRoutes)
+    ).orNotFound
+    app
+      .run(payment(sign(acrClaims(Some("loa3"), 1.minute))))
+      .map(resp => assertEquals(resp.status, Status.Ok))
+  }
+
+  test(
+    "requireAcr: the acr_values challenge preserves declared preference order"
+  ) {
+    import scala.concurrent.duration.*
+    val app = authMiddleware(
+      BearerAuth.requireAcr[IO](Acr("loa3"), Acr("loa2"), Acr("loa1"))(
+        paymentRoutes
+      )
+    ).orNotFound
+    app.run(payment(sign(acrClaims(Some("loa0"), 1.minute)))).map { resp =>
+      assertEquals(resp.status, Status.Unauthorized)
+      val challenge =
+        resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
+      // declared order (loa3 loa2 loa1), not alphabetical (loa1 loa2 loa3)
+      assert(challenge.contains("""acr_values="loa3 loa2 loa1""""), challenge)
+    }
+  }
+
+  test("requireAcr: duplicate acr values are de-duplicated in the challenge") {
+    import scala.concurrent.duration.*
+    val app = authMiddleware(
+      BearerAuth.requireAcr[IO](sca, sca)(paymentRoutes)
+    ).orNotFound
+    app.run(payment(sign(acrClaims(None, 1.minute)))).map { resp =>
+      assertEquals(resp.status, Status.Unauthorized)
+      val challenge =
+        resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
+      // single value: closing quote follows immediately, so it is not repeated
+      assert(
+        challenge.contains("""acr_values="urn:openbanking:psd2:sca""""),
+        challenge
+      )
+    }
+  }
+
+  test("requireAcr: a custom realm appears in the challenge") {
+    import scala.concurrent.duration.*
+    val app = authMiddleware(
+      BearerAuth.requireAcr[IO](sca)(paymentRoutes, realm = "bank")
+    ).orNotFound
+    app.run(payment(sign(acrClaims(None, 1.minute)))).map { resp =>
+      assertEquals(resp.status, Status.Unauthorized)
+      val challenge =
+        resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
+      assert(challenge.contains("""realm="bank""""), challenge)
+      assert(
+        challenge.contains("""error="insufficient_user_authentication""""),
+        challenge
+      )
+    }
+  }
+
+  test(
     "requireAcr + requireFreshAuth: 401 with max_age when acr ok but authentication too old"
   ) {
     import scala.concurrent.duration.*
-    freshAcrApp(5.minutes)
+    freshAcrApp(MaxAuthAge(300))
       .run(
         payment(sign(acrClaims(Some("urn:openbanking:psd2:sca"), 30.minutes)))
       )
@@ -354,7 +480,7 @@ class BearerAuthSpec extends CatsEffectSuite {
     "requireAcr + requireFreshAuth: 200 when acr ok and authentication recent"
   ) {
     import scala.concurrent.duration.*
-    freshAcrApp(5.minutes)
+    freshAcrApp(MaxAuthAge(300))
       .run(payment(sign(acrClaims(Some("urn:openbanking:psd2:sca"), 1.minute))))
       .map(resp => assertEquals(resp.status, Status.Ok))
   }
@@ -363,18 +489,113 @@ class BearerAuthSpec extends CatsEffectSuite {
     "requireFreshAuth: admits a recently-authenticated user regardless of acr"
   ) {
     import scala.concurrent.duration.*
-    freshApp(5.minutes)
+    freshApp(MaxAuthAge(300))
       .run(payment(sign(acrClaims(None, 1.minute))))
       .map(resp => assertEquals(resp.status, Status.Ok))
   }
 
   test("requireFreshAuth: 401 with max_age when the token has no auth_time") {
     import scala.concurrent.duration.*
-    freshApp(5.minutes).run(payment(sign(claims()))).map { resp =>
+    freshApp(MaxAuthAge(300)).run(payment(sign(claims()))).map { resp =>
       assertEquals(resp.status, Status.Unauthorized)
       val challenge =
         resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
       assert(challenge.contains("max_age=300"), challenge)
+    }
+  }
+
+  test("requireFreshAuth: a custom realm appears in the challenge") {
+    val app = authMiddleware(
+      BearerAuth.requireFreshAuth[IO](MaxAuthAge(300), "bank")(paymentRoutes)
+    ).orNotFound
+    app.run(payment(sign(claims()))).map { resp =>
+      assertEquals(resp.status, Status.Unauthorized)
+      val challenge =
+        resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
+      assert(challenge.contains("""realm="bank""""), challenge)
+      assert(challenge.contains("max_age=300"), challenge)
+    }
+  }
+
+  test(
+    "requireFreshAuth: max_age=0 rejects a prior authentication and emits max_age=0"
+  ) {
+    import scala.concurrent.duration.*
+    val app = authMiddleware(
+      BearerAuth.requireFreshAuth[IO](MaxAuthAge(0))(paymentRoutes)
+    ).orNotFound
+    app
+      .run(payment(sign(acrClaims(Some("urn:openbanking:psd2:sca"), 1.minute))))
+      .map { resp =>
+        assertEquals(resp.status, Status.Unauthorized)
+        val challenge =
+          resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
+        assert(challenge.contains("max_age=0"), challenge)
+      }
+  }
+
+  // ------------------------------------------------------- requireMfa (preset)
+
+  test("requireMfa: 401 acr_values=acr3 when the token carries no acr") {
+    import scala.concurrent.duration.*
+    val app =
+      authMiddleware(BearerAuth.requireMfa[IO]()(paymentRoutes)).orNotFound
+    app.run(payment(sign(acrClaims(None, 1.minute)))).map { resp =>
+      assertEquals(resp.status, Status.Unauthorized)
+      val challenge =
+        resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
+      assert(
+        challenge.contains("""error="insufficient_user_authentication""""),
+        challenge
+      )
+      assert(challenge.contains("""acr_values="acr3""""), challenge)
+    }
+  }
+
+  test(
+    "requireMfa: 401 max_age=300 when acr3 is present but authentication is stale"
+  ) {
+    import scala.concurrent.duration.*
+    val app =
+      authMiddleware(BearerAuth.requireMfa[IO]()(paymentRoutes)).orNotFound
+    app.run(payment(sign(acrClaims(Some("acr3"), 30.minutes)))).map { resp =>
+      assertEquals(resp.status, Status.Unauthorized)
+      val challenge =
+        resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
+      assert(challenge.contains("max_age=300"), challenge)
+    }
+  }
+
+  test(
+    "requireMfa: 200 when the token carries acr3 and recent authentication"
+  ) {
+    import scala.concurrent.duration.*
+    val app =
+      authMiddleware(BearerAuth.requireMfa[IO]()(paymentRoutes)).orNotFound
+    app
+      .run(payment(sign(acrClaims(Some("acr3"), 1.minute))))
+      .map(resp => assertEquals(resp.status, Status.Ok))
+  }
+
+  test("requireMfa: honors a custom mfaAcr and maxAge") {
+    import scala.concurrent.duration.*
+    val app = authMiddleware(
+      BearerAuth.requireMfa[IO](Acr("loa3"), MaxAuthAge(60))(paymentRoutes)
+    ).orNotFound
+    for {
+      // wrong acr -> challenge advertises the custom acr
+      rejected <- app.run(payment(sign(acrClaims(Some("acr3"), 1.minute))))
+      // right acr, fresh within the custom 60s window -> admitted
+      admitted <- app.run(payment(sign(acrClaims(Some("loa3"), 30.seconds))))
+    } yield {
+      assertEquals(rejected.status, Status.Unauthorized)
+      val challenge =
+        rejected.headers
+          .get(ci"WWW-Authenticate")
+          .map(_.head.value)
+          .getOrElse("")
+      assert(challenge.contains("""acr_values="loa3""""), challenge)
+      assertEquals(admitted.status, Status.Ok)
     }
   }
 
@@ -396,6 +617,26 @@ class BearerAuthSpec extends CatsEffectSuite {
           challenge.contains("""error="insufficient_user_authentication""""),
           challenge
         )
+    }
+  }
+
+  test("requireUser: a custom isUserPresent predicate overrides the default") {
+    import scala.concurrent.duration.*
+    // Treat "user present" as "the token carries an acr", regardless of sub.
+    val app = authMiddleware(
+      BearerAuth.requireUser[IO](isUserPresent = _.acr.isDefined)(routes)
+    ).orNotFound
+    for {
+      // default userPresent would admit (sub != client_id), but no acr present
+      rejected <- app.run(get("/accounts", Some(sign(claims()))))
+      // carries an acr -> admitted by the override
+      admitted <- app.run(
+        get("/accounts", Some(sign(acrClaims(Some("loa1"), 1.minute))))
+      )
+    } yield {
+      assertEquals(rejected.status, Status.Unauthorized)
+      assertError(rejected, "insufficient_user_authentication")
+      assertEquals(admitted.status, Status.Ok)
     }
   }
 

@@ -35,10 +35,8 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
   *   `client_id` and `jti`. (`iss` and `aud` are also mandatory but are
   *   enforced separately — by the exact-match issuer check and the audience
   *   check.) Relax this set if you must accept tokens from a non-9068-compliant
-  *   issuer.
-  * @param requireTokenId
-  *   if true, tokens without a `jti` claim are rejected; enable this when using
-  *   a revocation denylist
+  *   issuer. Keep `jti` here when using a revocation denylist so tokens cannot
+  *   dodge the check by omitting it.
   * @param maxTokenLength
   *   hard upper bound on the compact JWT length, to bound parsing work
   * @param jwksCacheTtl
@@ -65,7 +63,6 @@ final case class AuthConfig(
       Set(new JOSEObjectType("at+jwt"), JOSEObjectType.JWT),
     clockSkew: FiniteDuration = 30.seconds,
     requiredClaims: Set[String] = Set("sub", "exp", "iat", "client_id", "jti"),
-    requireTokenId: Boolean = false,
     maxTokenLength: Int = 8192,
     jwksCacheTtl: FiniteDuration = 15.minutes,
     jwksRefreshTimeout: FiniteDuration = 15.seconds,

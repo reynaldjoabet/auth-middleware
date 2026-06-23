@@ -38,7 +38,7 @@ object Dependencies {
     val magnum = "2.0.0-M3"
     val skunk = "1.1.0-RC1"
     val hikaricp = "7.0.2"
-    val flyway = "12.7.0"
+    val flyway = "12.9.0"
     val postgres = "42.7.11"
 
     // --- Security ---
@@ -235,7 +235,7 @@ object Dependencies {
   lazy val otel4sCore =
     "org.typelevel" %% "otel4s-core" % Version.otel4s
 
-  lazy val otelJava = "org.typelevel" %% "otel4s-otelJava" % Version.otel4s
+  lazy val otelJava = "org.typelevel" %% "otel4s-oteljava" % Version.otel4s
 
   // Logging
   lazy val scribe = "com.outr" %% "scribe" % Version.scribe

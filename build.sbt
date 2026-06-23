@@ -59,3 +59,6 @@ javaOptions += "-Dotel.java.global-autoconfigure.enabled=true"
 
 addCommandAlias("fmt", "scalafmtAll; scalafmtSbt")
 addCommandAlias("fmtCheck", "scalafmtCheckAll; scalafmtSbtCheck")
+
+Test / parallelExecution := true
+ThisBuild / usePipelining := true

@@ -348,3 +348,53 @@ acr
     OPTIONAL - as defined in Section 2 of [OpenID.Core]. 
 amr
     OPTIONAL - as defined in Section 2 of [OpenID.Core].
+
+[Dynamic Step-Up Authentication: Secure Your Access](https://www.youtube.com/watch?v=Ha03XDRv1BA&t=573s)    
+
+Resource servers (your protected APIs) can require different authentication strengths or elapsed time frames for different use cases. For example, an ecommerce app requires different authentication strengths depending on whether the item being purchased exceeds a certain threshold. Another example is an app that requires a higher level of assurance before it changes sensitive information.
+
+step-up authentication for API access (OAuth) and application access (OpenID Connect). 
+
+- `acr` – the Authentication Context Reference (ACR) describes the level to which authentication took place. ACR values are agreed between parties ahead of time. For example, the UK’s Open Banking uses an ACR value of urn:openbanking:psd2:sca to state that the user authenticated to the standard of Strong Customer Authentication (SCA).
+- `amr` – the Authentication Method Reference (AMR) describes how the user authenticated. For example, “pwd” for password, “otp” for a one-time password, or even “mfa” to signal that Multi-Factor Authentication (MFA) took place
+
+- `auth_time `– when the end-user last authenticated at the identity provider. This could be a few hours ago if they have a long-lived single sign-on session
+
+[step-up-authentication](https://www.scottbrady.io/oauth/step-up-authentication)
+
+## Step-up authentication for API access using OAuth
+
+With OAuth, you can achieve a similar approach where an API endpoint requires a specific level of authentication. You could implement this by requiring a scope that is protected at the authorization server by step-up authentication, or you could follow a similar approach to OpenID Connect by again using the same `acr`, `amr`, and `auth_time` claims, but this time as part of the access token. 
+
+```sh
+  --server            run sbt server in the foreground, instead of using sbtn
+  --client            run sbtn (native client), and start sbt server in the background
+  --no-server         run sbtn, and fail if it cannot connect to a server
+  --jvm-client        run JVM client, and start sbt server in the background
+``` 
+
+### Why --client (the default) is actually worse in CI
+It downloads the sbtn native binary first (sbt.sh:191 acquire_sbtn) — an extra network fetch from GitHub releases that can flake or slow the job.You gain nothing, because nothing reuses that background server.
+
+### The recommended CI invocation
+
+`sbt --server --batch "clean; compile; test"`
+`--server` — one foreground JVM that is the session, runs all batched commands, and exits cleanly. No native-client download, no background daemon to orphan. Most predictable. (sbt.sh:647)
+`--batch` — disables interactive mode so nothing ever blocks waiting on a prompt (sbt.sh:667).
+
+```scala
+final case class Scope private (
+    project: ScopeAxis[Reference],
+    config: ScopeAxis[ConfigKey],
+    task: ScopeAxis[AttributeKey[?]],
+    extra: ScopeAxis[AttributeMap]
+)
+```
+Every setting/task key in sbt isn't a single value — it's a value per scope. A scope is an address made of four axes 
+
+- Project axis — which subproject: a specific project, ThisBuild (whole build), or "any."
+- Config axis — which configuration: Compile, Test, Runtime, etc.
+- Task axis — which task: e.g. scoped to packageBin or console.
+- Extra axis — attribute-based, rarely used by hand.
+
+`--server` skips the whole client/server split. It runs the JVM directly in the foreground, does its work, and exits cleanly — one process, one JVM, no background leftovers.

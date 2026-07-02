@@ -1,15 +1,16 @@
 package auth
 
-import scala.concurrent.duration.*
-
 import cats.effect.IO
-import com.nimbusds.jose.proc.SecurityContext
+import com.nimbusds.jose.JOSEObjectType
+import com.nimbusds.jose.KeySourceException
+import com.nimbusds.jose.jwk.JWK
+import com.nimbusds.jose.jwk.JWKSelector
 import com.nimbusds.jose.jwk.source.JWKSource
-import com.nimbusds.jose.jwk.{JWK, JWKSelector}
-import com.nimbusds.jose.{JOSEObjectType, KeySourceException}
+import com.nimbusds.jose.proc.SecurityContext
 import com.nimbusds.jwt.JWTClaimsSet
 import io.github.iltotore.iron.*
 import munit.CatsEffectSuite
+import scala.concurrent.duration.*
 
 class JwtValidatorSpec extends CatsEffectSuite {
   import TestTokens.*

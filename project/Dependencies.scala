@@ -239,9 +239,9 @@ object Dependencies {
 
   // Redis/Valkey client (Sage) — recovered after the Dependencies.scala wipe.
   lazy val sageClientCe =
-    "com.github.ghostdogpr" %% "sage-client-ce" % "0.1.1"
+    "com.github.ghostdogpr" %% "sage-client-ce" % "0.2.0"
   lazy val sageClientZio =
-    "com.github.ghostdogpr" %% "sage-client-zio" % "0.1.1"
+    "com.github.ghostdogpr" %% "sage-client-zio" % "0.2.0"
 
   // Logging
   lazy val scribe = "com.outr" %% "scribe" % Version.scribe

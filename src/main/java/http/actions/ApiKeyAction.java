@@ -1,69 +1,70 @@
 package http.actions;
 
-// import jakarta.inject.Inject;
-// import play.libs.typedmap.TypedKey;
-// import play.mvc.*;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 
-// import java.util.Arrays;
-// import java.util.concurrent.CompletableFuture;
-// import java.util.concurrent.CompletionStage;
+import auth.ApiKeyPrincipal;
+import auth.ApiKeyStore;
+import auth.annotation.RequireApiKey;
+import jakarta.inject.Inject;
+import play.libs.typedmap.TypedKey;
+import play.mvc.Action;
+import play.mvc.Http;
+import play.mvc.Result;
+import play.mvc.Results;
 
-// public class ApiKeyAction extends Action<RequireApiKey> {
+/**
+ * Validates an API key from the {@code X-Api-Key} header against the injected
+ * {@link ApiKeyStore}, then checks the key's permissions against the
+ * annotation. Header only — query-parameter keys leak into logs and Referers.
+ */
+public class ApiKeyAction extends Action<RequireApiKey> {
 
-//     public static final TypedKey<ApiKeyPrincipal> PRINCIPAL = TypedKey.create("apikey.principal");
+    public static final TypedKey<ApiKeyPrincipal> PRINCIPAL = TypedKey.create("apikey.principal");
 
-//     private final ApiKeyStore keyStore;  // DB/cache lookup
+    private static final String API_KEY_HEADER = "X-Api-Key";
 
-//     @Inject
-//     public ApiKeyAction(ApiKeyStore keyStore) {
-//         this.keyStore = keyStore;
-//     }
+    private final ApiKeyStore keyStore;
 
-//     @Override
-//     public CompletionStage<Result> call(Http.Request req) {
+    @Inject
+    public ApiKeyAction(ApiKeyStore keyStore) {
+        this.keyStore = keyStore;
+    }
 
-//         // Extract from header or query param
-//         String rawKey = req.header("X-Api-Key")
-//             .orElseGet(() -> req.getQueryString("api_key") != null
-//                 ? req.getQueryString("api_key") : null);
+    @Override
+    public CompletionStage<Result> call(Http.Request req) {
 
-//         if (rawKey == null) {
-//             return error("401", "Missing API key");
-//         }
+        Optional<String> rawKey = req.header(API_KEY_HEADER);
+        if (rawKey.isEmpty()) {
+            return unauthorizedResult("Missing API key");
+        }
 
-//         // Lookup + validate (async DB/cache call)
-//         return keyStore.lookup(rawKey)
-//             .thenCompose(keyOpt -> {
-//                 if (keyOpt.isEmpty()) {
-//                     return error("401", "Invalid API key");
-//                 }
+        return keyStore.lookup(rawKey.get()).thenCompose(keyOpt -> {
+            if (keyOpt.isEmpty()) {
+                return unauthorizedResult("Invalid API key");
+            }
 
-//                 ApiKeyPrincipal principal = keyOpt.get();
+            ApiKeyPrincipal principal = keyOpt.get();
+            if (!principal.active()) {
+                return unauthorizedResult("API key has been revoked");
+            }
 
-//                 if (!principal.isActive()) {
-//                     return error("401", "API key has been revoked");
-//                 }
+            List<String> required = Arrays.asList(configuration.permissions());
+            if (!principal.permissions().containsAll(required)) {
+                return CompletableFuture.completedFuture(
+                        Results.forbidden("{\"error\":\"insufficient_permissions\"}")
+                                .as("application/json"));
+            }
 
-//                 // Check required permissions
-//                 if (configuration.permissions().length > 0) {
-//                     var required = Arrays.asList(configuration.permissions());
-//                     if (!principal.getPermissions().containsAll(required)) {
-//                         return error("403", "Insufficient API key permissions: " + required);
-//                     }
-//                 }
+            return delegate.call(req.addAttr(PRINCIPAL, principal));
+        });
+    }
 
-//                 return delegate.call(req.addAttr(PRINCIPAL, principal));
-//             });
-//     }
-
-//     private CompletionStage<Result> error(String status, String msg) {
-//         return CompletableFuture.completedFuture(
-//             "401".equals(status)
-//                 ? Results.unauthorized("{\"error\":\"" + msg + "\"}")
-//                 : Results.forbidden("{\"error\":\"" + msg + "\"}"));
-//     }
-// }
-
-
-public class ApiKeyAction {
+    private static CompletionStage<Result> unauthorizedResult(String message) {
+        return CompletableFuture.completedFuture(
+                Results.unauthorized("{\"error\":\"" + message + "\"}").as("application/json"));
+    }
 }

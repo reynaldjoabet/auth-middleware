@@ -148,7 +148,8 @@ object DpopVerifier {
     *
     * Returns a [[cats.effect.Resource]]: when it owns the default in-memory
     * checker, that checker starts a background purge timer thread stopped on
-    * release. Acquire the verifier once at startup and reuse it across requests.
+    * release. Acquire the verifier once at startup and reuse it across
+    * requests.
     *
     * @param singleUseChecker
     *   the DPoP proof `jti` single-use checker. `None` (default) creates and

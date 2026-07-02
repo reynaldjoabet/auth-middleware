@@ -1,31 +1,34 @@
 package auth.annotation;
 
-//import auth.RequireScopeAction;
+import http.actions.ScopeCheckAction;
+import java.lang.annotation.Documented;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Inherited;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+import play.mvc.With;
 
-
-//import play.mvc.With;
-import java.lang.annotation.*;
-
-//@With(RequireScopeAction.class)
+/**
+ * Validates that the token contains ALL the required scopes.
+ * Must be composed after {@link RequireOAuth2} (or {@link Authenticated}).
+ *
+ * <p>On failure responds {@code 403} with
+ * {@code WWW-Authenticate: Bearer error="insufficient_scope", scope="…"}
+ * advertising the full required set (RFC 6750 §3.1).
+ *
+ * <pre>
+ *   &#64;RequireOAuth2
+ *   &#64;RequireScope({"read:orders", "read:profile"})
+ *   public Result orders(Http.Request req) { ... }
+ * </pre>
+ */
+@With(ScopeCheckAction.class)
 @Target({ElementType.TYPE, ElementType.METHOD})
 @Retention(RetentionPolicy.RUNTIME)
+@Inherited
+@Documented
 public @interface RequireScope {
-    String value();
+    /** All listed scopes must be present in the token. */
+    String[] value();
 }
-
-// /**
-//  * Validates that the token contains ALL the required scopes.
-//  * Must be composed with @RequireOAuth2.
-//  *
-//  * Usage:
-//  *   @RequireOAuth2
-//  *   @RequireScope({"read:orders", "read:profile"})
-//  *   public Result orders(Http.Request req) { ... }
-//  */
-// @With(ScopeCheckAction.class)
-// @Target({ElementType.TYPE, ElementType.METHOD})
-// @Retention(RetentionPolicy.RUNTIME)
-// public @interface RequireScope {
-//     /** All listed scopes must be present in the token */
-//     String[] value();
-// }

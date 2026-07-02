@@ -1,94 +1,99 @@
 package http.actions;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 
-// import com.fasterxml.jackson.databind.JsonNode;
-// import com.fasterxml.jackson.databind.ObjectMapper;
-// import jakarta.inject.Inject;
-// import play.mvc.*;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
-// import java.util.*;
-// import java.util.concurrent.CompletableFuture;
-// import java.util.concurrent.CompletionStage;
+import auth.OAuthAttrs;
+import auth.Principal;
+import auth.SecurityAttrs;
+import auth.annotation.RequireAuthzDetail;
+import jakarta.inject.Inject;
+import play.mvc.Action;
+import play.mvc.Http;
+import play.mvc.Result;
+import play.mvc.Results;
 
-// /**
-//  * Validates authorization_details claim per RFC 9396 (RAR).
-//  * Reads the structured authorization_details from the validated JWT
-//  * and checks it matches the required type, actions, and locations.
-//  */
-// public class AuthzDetailAction extends Action<RequireAuthzDetail> {
+/**
+ * Validates the {@code authorization_details} claim per RFC 9396 (Rich
+ * Authorization Requests): the token must carry an entry matching the required
+ * type whose actions and locations cover the annotation's requirements. The
+ * matched entry is attached as {@code OAuthAttrs.AUTHZ_DETAIL} for the
+ * controller to enforce instance-level rules (amounts, account ids, …).
+ * Must be composed after {@code @RequireOAuth2}.
+ */
+public class AuthzDetailAction extends Action<RequireAuthzDetail> {
 
-//     private final ObjectMapper mapper;
+    private final ObjectMapper mapper;
 
-//     @Inject
-//     public AuthzDetailAction(ObjectMapper mapper) {
-//         this.mapper = mapper;
-//     }
+    @Inject
+    public AuthzDetailAction(ObjectMapper mapper) {
+        this.mapper = mapper;
+    }
 
-//     @Override
-//     public CompletionStage<Result> call(Http.Request req) {
+    @Override
+    public CompletionStage<Result> call(Http.Request req) {
 
-//         Map<String, Object> claims = req.attrs().get(OAuthAttrs.ALL_CLAIMS);
-//         if (claims == null) {
-//             return forbidden("Token claims not present — @RequireOAuth2 must run first");
-//         }
+        Optional<Principal> principal = req.attrs().getOptional(SecurityAttrs.PRINCIPAL);
+        if (principal.isEmpty()) {
+            return forbiddenResult("No token claims found — @RequireOAuth2 must precede @RequireAuthzDetail");
+        }
 
-//         // authorization_details is a JSON array in the token
-//         Object rawDetails = claims.get("authorization_details");
-//         if (rawDetails == null) {
-//             return forbidden("Token does not contain authorization_details (RFC 9396)");
-//         }
+        Object rawDetails = principal.get().raw.getClaim("authorization_details");
+        if (rawDetails == null) {
+            return forbiddenResult("Token does not contain authorization_details");
+        }
 
-//         try {
-//             JsonNode detailsArray = mapper.valueToTree(rawDetails);
-//             if (!detailsArray.isArray()) {
-//                 return forbidden("authorization_details must be a JSON array");
-//             }
+        try {
+            JsonNode detailsArray = mapper.valueToTree(rawDetails);
+            if (!detailsArray.isArray()) {
+                return forbiddenResult("authorization_details must be a JSON array");
+            }
 
-//             String requiredType     = configuration.type();
-//             List<String> reqActions = Arrays.asList(configuration.actions());
-//             List<String> reqLocations = Arrays.asList(configuration.locations());
+            String requiredType = configuration.type();
+            List<String> requiredActions = Arrays.asList(configuration.actions());
+            List<String> requiredLocations = Arrays.asList(configuration.locations());
 
-//             // Find a matching authorization_details entry
-//             for (JsonNode detail : detailsArray) {
-//                 String type = detail.path("type").asText();
-//                 if (!requiredType.equals(type)) continue;
+            for (JsonNode detail : detailsArray) {
+                if (!requiredType.equals(detail.path("type").asText())) {
+                    continue;
+                }
+                if (!requiredActions.isEmpty()
+                        && !asTextList(detail.path("actions")).containsAll(requiredActions)) {
+                    continue;
+                }
+                if (!requiredLocations.isEmpty()
+                        && !asTextList(detail.path("locations")).containsAll(requiredLocations)) {
+                    continue;
+                }
 
-//                 // Check required actions
-//                 if (!reqActions.isEmpty()) {
-//                     List<String> grantedActions = new ArrayList<>();
-//                     detail.path("actions").forEach(a -> grantedActions.add(a.asText()));
-//                     if (!grantedActions.containsAll(reqActions)) continue;
-//                 }
+                Http.Request enriched = req.addAttr(OAuthAttrs.AUTHZ_DETAIL, detail.toString());
+                return delegate.call(enriched);
+            }
 
-//                 // Check required locations (resource server indicator)
-//                 if (!reqLocations.isEmpty()) {
-//                     List<String> grantedLocations = new ArrayList<>();
-//                     detail.path("locations").forEach(l -> grantedLocations.add(l.asText()));
-//                     if (!grantedLocations.containsAll(reqLocations)) continue;
-//                 }
+            return forbiddenResult("No matching authorization_details entry for type=" + requiredType);
 
-//                 // Match found — attach the detail to the request for the controller
-//                 Http.Request enriched = req.addAttr(
-//                     OAuthAttrs.AUTHZ_DETAIL, detail.toString());
-//                 return delegate.call(enriched);
-//             }
+        } catch (RuntimeException e) {
+            return forbiddenResult("Failed to parse authorization_details");
+        }
+    }
 
-//             return forbidden("No matching authorization_details entry for type=" +
-//                 requiredType + " actions=" + reqActions);
+    private static List<String> asTextList(JsonNode array) {
+        List<String> values = new ArrayList<>();
+        array.forEach(node -> values.add(node.asText()));
+        return values;
+    }
 
-//         } catch (Exception e) {
-//             return forbidden("Failed to parse authorization_details: " + e.getMessage());
-//         }
-//     }
-
-//     private CompletionStage<Result> forbidden(String desc) {
-//         return CompletableFuture.completedFuture(
-//             Results.forbidden()
-//                 .withHeader("WWW-Authenticate",
-//                     "Bearer error=\"insufficient_authorization_details\", " +
-//                     "error_description=\"" + desc + "\""));
-//     }
-// }
-
-public class AuthzDetailAction {
+    private static CompletionStage<Result> forbiddenResult(String desc) {
+        return CompletableFuture.completedFuture(
+                Results.forbidden().withHeader(Http.HeaderNames.WWW_AUTHENTICATE,
+                        "Bearer error=\"insufficient_authorization_details\", "
+                                + "error_description=\"" + desc + "\""));
+    }
 }

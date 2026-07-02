@@ -1,8 +1,14 @@
 package auth.annotation;
 
-// import auth.RequireDPoPNonceAction;
-// import play.mvc.With;
-import java.lang.annotation.*;
+import java.lang.annotation.Documented;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Inherited;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+import http.actions.DPoPNonceEnforcementAction;
+import play.mvc.With;
 
 /**
  * Requires that a DPoP proof carry a fresh, server-provided nonce (RFC 9449
@@ -14,10 +20,10 @@ import java.lang.annotation.*;
  * <p>This is the FAPI 2.0 fix for DPoP Proof Replay: without a nonce, a network
  * attacker who reads a leaked resource request (or blocks the honest one) can
  * replay the proof, since per-node jti single-use detection never sees the
- * original. Back it with a nonce store — the Scala {@code auth.DpopNonceStore}
- * port (in-memory, or a shared store behind a load balancer). mTLS-bound tokens
- * ({@link RequireMtls}) do not need this — they are not
- * replayable.
+ * original. Nonces are stateless encrypted server timestamps (Duende's
+ * {@code DefaultDPoPNonceValidator} design, see {@code auth.service.DPoPNonceService})
+ * — no store needed, load-balancer safe when nodes share the key. mTLS-bound
+ * tokens ({@link RequireMtls}) do not need this — they are not replayable.
  *
  * <pre>
  *   &#64;RequireOAuth2
@@ -26,8 +32,10 @@ import java.lang.annotation.*;
  *   public Result transfer(Http.Request req) { ... }
  * </pre>
  */
-// @With(RequireDPoPNonceAction.class)
-@Target({ ElementType.TYPE, ElementType.METHOD })
+@With(DPoPNonceEnforcementAction.class)
+@Target({ElementType.TYPE, ElementType.METHOD})
 @Retention(RetentionPolicy.RUNTIME)
+@Inherited
+@Documented
 public @interface RequireDPoPNonce {
 }

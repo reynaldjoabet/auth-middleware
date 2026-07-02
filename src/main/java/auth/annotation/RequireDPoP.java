@@ -1,8 +1,13 @@
 package auth.annotation;
 
-// import auth.RequireDPoPAction;
-// import play.mvc.With;
-import java.lang.annotation.*;
+import http.actions.DPoPEnforcementAction;
+import java.lang.annotation.Documented;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Inherited;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+import play.mvc.With;
 
 /**
  * Enforces DPoP-only access (RFC 9449) on a controller or action method:
@@ -17,7 +22,9 @@ import java.lang.annotation.*;
  * a nonce via {@link RequireDPoPNonce} on high-value endpoints, or prefer mTLS
  * sender-constraining ({@link RequireMtls}), which is not replayable.
  *
- * <p>Shorthand for {@code @RequireOAuth2(requireDPoP = true)}.
+ * <p>Per-endpoint shorthand for {@code @RequireOAuth2(requireDPoP = true)};
+ * must be composed after {@link RequireOAuth2} / {@link Authenticated}, which
+ * do the actual proof verification.
  *
  * <pre>
  *   &#64;RequireOAuth2
@@ -25,8 +32,10 @@ import java.lang.annotation.*;
  *   public Result transfer(Http.Request req) { ... }
  * </pre>
  */
-// @With(RequireDPoPAction.class)
-@Target({ ElementType.TYPE, ElementType.METHOD })
+@With(DPoPEnforcementAction.class)
+@Target({ElementType.TYPE, ElementType.METHOD})
 @Retention(RetentionPolicy.RUNTIME)
+@Inherited
+@Documented
 public @interface RequireDPoP {
 }

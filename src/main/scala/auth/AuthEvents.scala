@@ -16,11 +16,11 @@ trait AuthEvents[F[_]] {
   def authSucceeded(ctx: AuthContext): F[Unit]
   def authFailed(error: AuthError, internalDetail: String): F[Unit]
 
-  /** A protocol challenge was issued — e.g. `use_dpop_nonce` (RFC 9449 §8):
-    * the client is being told *how* to authenticate, not being denied. Routine
+  /** A protocol challenge was issued — e.g. `use_dpop_nonce` (RFC 9449 §8): the
+    * client is being told *how* to authenticate, not being denied. Routine
     * traffic, so it must not be counted as a failure in metrics or audit
-    * trails. Defaults to [[authFailed]] for implementations written before
-    * this hook existed.
+    * trails. Defaults to [[authFailed]] for implementations written before this
+    * hook existed.
     */
   def challengeIssued(error: AuthError, internalDetail: String): F[Unit] =
     authFailed(error, internalDetail)
@@ -64,7 +64,11 @@ object AuthEvents {
         internalDetail: String
     ): F[Unit] =
       Sync[F].delay(
-        log.debug("challenge issued ({}): {}", outcomeCode(error), internalDetail)
+        log.debug(
+          "challenge issued ({}): {}",
+          outcomeCode(error),
+          internalDetail
+        )
       )
   }
 }

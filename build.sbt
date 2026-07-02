@@ -1,10 +1,8 @@
 import Dependencies._
 
-scalaVersion := "3.3.8"
+scalaVersion := "3.8.3"
 version := "0.1.0-SNAPSHOT"
 scalacOptions ++= Seq(
-  "-encoding",
-  "UTF-8",
   "-no-indent",
   "-deprecation",
   "-feature",
@@ -14,9 +12,9 @@ scalacOptions ++= Seq(
   // "-Wunused:all",
   "-Wvalue-discard",
   "-Wnonunit-statement",
-  "-Ysafe-init",
+  "-Wsafe-init",
   "-language:strictEquality", // + catch nonsensical == (Money vs String, etc.)
-  "-Ykind-projector",
+  "-Xkind-projector",
   "-Xmax-inlines",
   "64"
 )
@@ -24,7 +22,8 @@ scalacOptions ++= Seq(
 lazy val root = (project in file("."))
   .settings(
     name := "auth-middleware",
-    libraryDependencies := Seq(
+    // Use ++= so PlayJava plugin defaults (play/play-java/jackson) remain on the classpath.
+    libraryDependencies ++= Seq(
       iron,
       munit,
       catsEffect,
@@ -56,9 +55,12 @@ lazy val root = (project in file("."))
       "io.opentelemetry" % "opentelemetry-exporter-otlp" % "1.63.0" % Runtime,
       "io.opentelemetry" % "opentelemetry-sdk-extension-autoconfigure" % "1.63.0" % Runtime,
       Dependencies.sageClientCe,
-      Dependencies.sageClientZio
+      Dependencies.sageClientZio,
+      "jakarta.inject" % "jakarta.inject-api" % "2.0.1"
     )
   )
+  .enablePlugins(PlayJava)
+  .disablePlugins(PlayLayoutPlugin)
 
 javaOptions += "-Dotel.java.global-autoconfigure.enabled=true"
 

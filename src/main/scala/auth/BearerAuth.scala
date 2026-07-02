@@ -52,8 +52,7 @@ import auth.given
   * Error bodies and challenge parameters only ever contain fixed,
   * library-controlled strings — no token contents, claim values or upstream
   * error messages. The one dynamic value is the `DPoP-Nonce` header: a
-  * server-minted random nonce (RFC 9449 §8), never derived from token
-  * material.
+  * server-minted random nonce (RFC 9449 §8), never derived from token material.
   */
 object BearerAuth {
 
@@ -202,7 +201,7 @@ object BearerAuth {
     // the client the nonce it needs to recover immediately — a proof rejected
     // after its nonce was consumed would otherwise cost two more round trips.
     dpop.flatMap(_.nonces) match {
-      case None => base
+      case None        => base
       case Some(store) =>
         routes =>
           Kleisli { (req: Request[F]) =>

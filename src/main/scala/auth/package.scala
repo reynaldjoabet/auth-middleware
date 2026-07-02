@@ -1,13 +1,13 @@
 package auth
-import org.typelevel.ci.*
-import org.http4s.Uri.Scheme
-import org.http4s.Method
-import org.http4s.Uri.Path
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
-import io.github.iltotore.iron.constraint.string.*
-import io.github.iltotore.iron.constraint.numeric.*
 import io.github.iltotore.iron.constraint.collection.*
+import io.github.iltotore.iron.constraint.numeric.*
+import io.github.iltotore.iron.constraint.string.*
+import org.http4s.Method
+import org.http4s.Uri.Path
+import org.http4s.Uri.Scheme
+import org.typelevel.ci.*
 
 given CanEqual[CIString, CIString] = CanEqual.derived
 given CanEqual[Scheme, Scheme] = CanEqual.derived
@@ -22,7 +22,8 @@ type HttpsUriNoFragment = Match["^https://[^#\\s]+$"]
 // DPoP htu has neither query nor fragment (RFC 9449 §4.3).
 type HtuUri = Match["^https://[^?#\\s]+$"]
 
-type NonBlank = Not[Blank] & Trimmed // non-blank + trim()
+type NonBlank =
+  Match["^\\S(?:.*\\S)?$"] // non-empty, no leading/trailing whitespace
 
 // Client-controlled charset for values YOU mint. For values you RECEIVE
 // from third parties, prefer the wider RFC grammars below.
@@ -57,7 +58,7 @@ type ParExpiresInSeconds = Positive
 // RFC 9470 max_age: a non-negative count of seconds since the last active
 // user-authentication event (0 is RFC-legal — "must have just authenticated").
 type MaxAuthAge = MaxAuthAge.T
-object MaxAuthAge extends RefinedType[Int, Positive0]
+object MaxAuthAge extends RefinedType[Int, GreaterEqual[0]]
 
 // RFC 9126: request_uri is urn:ietf:params:oauth:request_uri:<ref> (or an https URI).
 type RequestUriC =
@@ -185,8 +186,7 @@ object Htu extends RefinedType[String, HtuUri]
 // RFC 9449 §8-9 DPoP-Nonce: an opaque, resource-server-minted value the client
 // must echo in its proof's `nonce` claim. Base64url, bounded for DoS safety.
 type DpopNonce = DpopNonce.T
-object DpopNonce
-    extends RefinedType[String, Base64UrlNoPadding & MaxLength[256]]
+object DpopNonce extends RefinedType[String, Match["^[A-Za-z0-9_-]{1,256}$"]]
 
 type EmailAddress = EmailAddress.T
 object EmailAddress extends RefinedType[String, EmailAddressC]

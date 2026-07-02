@@ -738,6 +738,12 @@ Auth0's `JWT.decode()` is a foot-gun for a resource server: it parses without ve
 
  RFC 9449 §8.2 expects the server to hand out the next nonce on successful responses.
 
+ the resource server still has to authenticate the request before it can trust the authorization information.
+
+ OAuth delegates the granting of authorization to the authorization server, but the resource server must still verify the proof of that grant.
+
+ RFC 6750 makes a similar distinction: an expired, revoked, malformed, or otherwise invalid token maps to `invalid_token`, typically with HTTP 401; insufficient privileges map to `insufficient_scope`, typically with HTTP 403.
+
 ## Observability
 every service writes down the time duration for the task it performs, that is the span... how do you know spans belong to the same user request?, you tag each span with a tracid.. we use graphana with a traceid to pull all the spans
 

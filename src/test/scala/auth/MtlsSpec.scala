@@ -1,16 +1,19 @@
 package auth
 
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
-
 import cats.effect.IO
+import io.github.iltotore.iron.*
 import munit.CatsEffectSuite
+import org.http4s.AuthedRoutes
+import org.http4s.Header
+import org.http4s.Method
+import org.http4s.Request
+import org.http4s.Status
 import org.http4s.dsl.Http4sDsl
 import org.http4s.implicits.*
-import org.http4s.{AuthedRoutes, Header, Method, Request, Status}
 import org.typelevel.ci.*
 
-import io.github.iltotore.iron.*
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
 class MtlsSpec extends CatsEffectSuite {
   import TestTokens.*

@@ -2,13 +2,16 @@ package auth
 
 import cats.effect.IO
 import cats.effect.kernel.Resource
+import io.github.iltotore.iron.*
 import munit.CatsEffectSuite
+import org.http4s.AuthedRoutes
+import org.http4s.HttpApp
+import org.http4s.Method
+import org.http4s.Request
+import org.http4s.Response
 import org.http4s.dsl.Http4sDsl
 import org.http4s.implicits.*
-import org.http4s.{AuthedRoutes, HttpApp, Method, Request, Response}
 import org.typelevel.ci.*
-
-import io.github.iltotore.iron.*
 
 /** Shared fixtures for the DPoP suites: a validator over the test JWKS, a
   * trivial protected route, and helpers to build DPoP requests and read

@@ -1,28 +1,25 @@
 package auth
 
 import cats.effect.IO
+import com.nimbusds.jose.KeySourceException
+import com.nimbusds.jose.jwk.JWK
+import com.nimbusds.jose.jwk.JWKSelector
+import com.nimbusds.jose.jwk.source.JWKSource
+import com.nimbusds.jose.proc.SecurityContext
+import io.github.iltotore.iron.*
+import io.github.iltotore.iron.constraint.all.*
 import munit.CatsEffectSuite
+import org.http4s.AuthScheme
+import org.http4s.AuthedRoutes
+import org.http4s.BasicCredentials
+import org.http4s.Credentials
+import org.http4s.Method
+import org.http4s.Request
+import org.http4s.Status
 import org.http4s.dsl.Http4sDsl
 import org.http4s.headers.Authorization
 import org.http4s.implicits.*
-import org.http4s.{
-  AuthScheme,
-  AuthedRoutes,
-  BasicCredentials,
-  Credentials,
-  Method,
-  Request,
-  Status
-}
 import org.typelevel.ci.*
-
-import com.nimbusds.jose.KeySourceException
-import com.nimbusds.jose.jwk.{JWK, JWKSelector}
-import com.nimbusds.jose.jwk.source.JWKSource
-import com.nimbusds.jose.proc.SecurityContext
-
-import io.github.iltotore.iron.*
-import io.github.iltotore.iron.constraint.all.*
 
 class BearerAuthSpec extends CatsEffectSuite {
   import TestTokens.*
@@ -464,7 +461,7 @@ class BearerAuthSpec extends CatsEffectSuite {
     "requireAcr + requireFreshAuth: 401 with max_age when acr ok but authentication too old"
   ) {
     import scala.concurrent.duration.*
-    freshAcrApp(MaxAuthAge(300))
+    freshAcrApp(MaxAuthAge.applyUnsafe(300))
       .run(
         payment(sign(acrClaims(Some("urn:openbanking:psd2:sca"), 30.minutes)))
       )
@@ -480,7 +477,7 @@ class BearerAuthSpec extends CatsEffectSuite {
     "requireAcr + requireFreshAuth: 200 when acr ok and authentication recent"
   ) {
     import scala.concurrent.duration.*
-    freshAcrApp(MaxAuthAge(300))
+    freshAcrApp(MaxAuthAge.applyUnsafe(300))
       .run(payment(sign(acrClaims(Some("urn:openbanking:psd2:sca"), 1.minute))))
       .map(resp => assertEquals(resp.status, Status.Ok))
   }
@@ -489,24 +486,28 @@ class BearerAuthSpec extends CatsEffectSuite {
     "requireFreshAuth: admits a recently-authenticated user regardless of acr"
   ) {
     import scala.concurrent.duration.*
-    freshApp(MaxAuthAge(300))
+    freshApp(MaxAuthAge.applyUnsafe(300))
       .run(payment(sign(acrClaims(None, 1.minute))))
       .map(resp => assertEquals(resp.status, Status.Ok))
   }
 
   test("requireFreshAuth: 401 with max_age when the token has no auth_time") {
     import scala.concurrent.duration.*
-    freshApp(MaxAuthAge(300)).run(payment(sign(claims()))).map { resp =>
-      assertEquals(resp.status, Status.Unauthorized)
-      val challenge =
-        resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
-      assert(challenge.contains("max_age=300"), challenge)
+    freshApp(MaxAuthAge.applyUnsafe(300)).run(payment(sign(claims()))).map {
+      resp =>
+        assertEquals(resp.status, Status.Unauthorized)
+        val challenge =
+          resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
+        assert(challenge.contains("max_age=300"), challenge)
     }
   }
 
   test("requireFreshAuth: a custom realm appears in the challenge") {
     val app = authMiddleware(
-      BearerAuth.requireFreshAuth[IO](MaxAuthAge(300), "bank")(paymentRoutes)
+      BearerAuth.requireFreshAuth[IO](
+        MaxAuthAge.applyUnsafe(300),
+        "bank"
+      )(paymentRoutes)
     ).orNotFound
     app.run(payment(sign(claims()))).map { resp =>
       assertEquals(resp.status, Status.Unauthorized)
@@ -522,7 +523,7 @@ class BearerAuthSpec extends CatsEffectSuite {
   ) {
     import scala.concurrent.duration.*
     val app = authMiddleware(
-      BearerAuth.requireFreshAuth[IO](MaxAuthAge(0))(paymentRoutes)
+      BearerAuth.requireFreshAuth[IO](MaxAuthAge.applyUnsafe(0))(paymentRoutes)
     ).orNotFound
     app
       .run(payment(sign(acrClaims(Some("urn:openbanking:psd2:sca"), 1.minute))))
@@ -580,7 +581,9 @@ class BearerAuthSpec extends CatsEffectSuite {
   test("requireMfa: honors a custom mfaAcr and maxAge") {
     import scala.concurrent.duration.*
     val app = authMiddleware(
-      BearerAuth.requireMfa[IO](Acr("loa3"), MaxAuthAge(60))(paymentRoutes)
+      BearerAuth.requireMfa[IO](Acr("loa3"), MaxAuthAge.applyUnsafe(60))(
+        paymentRoutes
+      )
     ).orNotFound
     for {
       // wrong acr -> challenge advertises the custom acr

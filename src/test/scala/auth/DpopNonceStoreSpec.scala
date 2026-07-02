@@ -193,7 +193,11 @@ class DpopNonceStoreSpec extends DpopBaseSuite {
     appWithNonces.use { a =>
       a.run(bearerRequest(token)).map { resp =>
         assertEquals(resp.status, Status.Ok)
-        assertEquals(nonceOf(resp), "", "Bearer response must not carry DPoP-Nonce")
+        assertEquals(
+          nonceOf(resp),
+          "",
+          "Bearer response must not carry DPoP-Nonce"
+        )
       }
     }
   }

@@ -1,53 +1,45 @@
 package http.actions;
 
-// import jakarta.inject.Inject;
-// import play.mvc.*;
+import auth.Principal;
+import auth.SecurityAttrs;
+import auth.annotation.RequireScope;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import play.mvc.Action;
+import play.mvc.Http;
+import play.mvc.Result;
+import play.mvc.Results;
 
-// import java.util.Arrays;
-// import java.util.List;
-// import java.util.concurrent.CompletableFuture;
-// import java.util.concurrent.CompletionStage;
+/**
+ * Verifies that the token contains ALL required scopes. Reads the principal
+ * set by the token pipeline upstream — must be composed after
+ * {@code @RequireOAuth2} / {@code @Authenticated}.
+ */
+public class ScopeCheckAction extends Action<RequireScope> {
 
-// /**
-//  * Verifies that the token contains ALL required scopes.
-//  * Reads scopes from OAuthAttrs set by OAuthTokenAction upstream.
-//  * Must be composed AFTER @RequireOAuth2.
-//  */
-// public class ScopeCheckAction extends Action<RequireScope> {
+    @Override
+    public CompletionStage<Result> call(Http.Request req) {
 
-//     @Override
-//     public CompletionStage<Result> call(Http.Request req) {
+        Optional<Principal> principal = req.attrs().getOptional(SecurityAttrs.PRINCIPAL);
+        if (principal.isEmpty()) {
+            return CompletableFuture.completedFuture(
+                    Results.unauthorized().withHeader(Http.HeaderNames.WWW_AUTHENTICATE,
+                            "Bearer error=\"invalid_token\", error_description=\"No token claims found — "
+                                    + "@RequireOAuth2 must precede @RequireScope\""));
+        }
 
-//         // Token validation must have run first
-//         if (!req.attrs().containsKey(OAuthAttrs.SCOPES)) {
-//             return CompletableFuture.completedFuture(
-//                 Results.unauthorized("Bearer error=\"invalid_token\", " +
-//                     "error_description=\"No token claims found — " +
-//                     "@RequireOAuth2 must precede @RequireScope\""));
-//         }
+        List<String> required = Arrays.asList(configuration.value());
+        if (!principal.get().scopes.containsAll(required)) {
+            // RFC 6750 §3.1: advertise the full required set; don't enumerate what's missing
+            return CompletableFuture.completedFuture(
+                    Results.forbidden().withHeader(Http.HeaderNames.WWW_AUTHENTICATE,
+                            "Bearer error=\"insufficient_scope\", scope=\""
+                                    + String.join(" ", required) + "\""));
+        }
 
-//         List<String> tokenScopes    = req.attrs().get(OAuthAttrs.SCOPES);
-//         List<String> requiredScopes = Arrays.asList(configuration.value());
-
-//         boolean hasAllScopes = tokenScopes.containsAll(requiredScopes);
-
-//         if (!hasAllScopes) {
-//             List<String> missing = requiredScopes.stream()
-//                 .filter(s -> !tokenScopes.contains(s))
-//                 .toList();
-
-//             return CompletableFuture.completedFuture(
-//                 Results.forbidden()
-//                     .withHeader("WWW-Authenticate",
-//                         "Bearer error=\"insufficient_scope\", " +
-//                         "error_description=\"Required scopes: " + missing + "\", " +
-//                         "scope=\"" + String.join(" ", requiredScopes) + "\""));
-//         }
-
-//         return delegate.call(req);
-//     }
-// }
-
-
-public class ScopeCheckAction {
+        return delegate.call(req);
+    }
 }

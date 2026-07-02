@@ -1,32 +1,41 @@
 package http.actions;
 
+import auth.OAuthAttrs;
+import auth.annotation.RequireDPoP;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import play.mvc.Action;
+import play.mvc.Http;
+import play.mvc.Result;
+import play.mvc.Results;
 
-// import play.mvc.*;
-// import java.util.concurrent.CompletableFuture;
-// import java.util.concurrent.CompletionStage;
+/**
+ * Enforces that the request used a DPoP-bound token. Per-endpoint shorthand
+ * for {@code @RequireOAuth2(requireDPoP = true)} — the proof itself was
+ * already verified by the token pipeline; this only rejects Bearer
+ * presentation. Must be composed after {@code @RequireOAuth2}.
+ */
+public class DPoPEnforcementAction extends Action<RequireDPoP> {
 
-// /**
-//  * Enforces that the request used a DPoP-bound token.
-//  * Shorthand for @RequireOAuth2(requireDPoP = true) on individual methods.
-//  */
-// public class DPoPEnforcementAction extends Action<RequireDPoP> {
+    @Override
+    public CompletionStage<Result> call(Http.Request req) {
 
-//     @Override
-//     public CompletionStage<Result> call(Http.Request req) {
+        Optional<Boolean> isDPoP = req.attrs().getOptional(OAuthAttrs.IS_DPOP_BOUND);
+        if (isDPoP.isEmpty()) {
+            return CompletableFuture.completedFuture(
+                    Results.unauthorized().withHeader(Http.HeaderNames.WWW_AUTHENTICATE,
+                            "Bearer error=\"invalid_token\", error_description=\"No token claims found — "
+                                    + "@RequireOAuth2 must precede @RequireDPoP\""));
+        }
 
-//         Boolean isDPoP = req.attrs().getOptional(OAuthAttrs.IS_DPOP_BOUND).orElse(false);
+        if (!isDPoP.get()) {
+            return CompletableFuture.completedFuture(
+                    Results.unauthorized().withHeader(Http.HeaderNames.WWW_AUTHENTICATE,
+                            "DPoP error=\"invalid_token\", "
+                                    + "error_description=\"This endpoint requires a DPoP-bound access token\""));
+        }
 
-//         if (!isDPoP) {
-//             return CompletableFuture.completedFuture(
-//                 Results.unauthorized()
-//                     .withHeader("WWW-Authenticate",
-//                         "DPoP realm=\"api\", error=\"invalid_token\", " +
-//                         "error_description=\"This endpoint requires a DPoP-bound access token\""));
-//         }
-
-//         return delegate.call(req);
-//     }
-// }
-
-public class DPoPEnforcementAction {
+        return delegate.call(req);
+    }
 }

@@ -1,11 +1,14 @@
 package auth
 
-import scala.concurrent.duration.*
-
 import cats.effect.IO
 import com.nimbusds.jose.JOSEObjectType
-import org.http4s.{Method, Request, Response, Status}
+import org.http4s.Method
+import org.http4s.Request
+import org.http4s.Response
+import org.http4s.Status
 import org.typelevel.ci.*
+
+import scala.concurrent.duration.*
 
 class DpopVerifierSpec extends DpopBaseSuite {
   import TestTokens.*

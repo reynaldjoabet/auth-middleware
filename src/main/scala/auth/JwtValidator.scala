@@ -26,8 +26,9 @@ trait JwtValidator[F[_]] {
 
   /** Fully validate a compact-serialized JWT: structure, JOSE `typ` header,
     * signature against the issuer's JWKS, issuer, audience, lifetime, required
-    * claims and the revocation denylist. Returns a redaction-safe [[AuthError]]
-    * on the left; internal diagnostics are reported via [[AuthEvents]].
+    * claims, the revocation denylist and (when configured) RFC 7662
+    * introspection. Returns a redaction-safe [[AuthError]] on the left;
+    * internal diagnostics are reported via [[AuthEvents]].
     */
   def validate(token: String): F[Either[AuthError, AuthContext]]
 }
@@ -38,11 +39,20 @@ object JwtValidator {
     * cached, with rate limiting, retries and outage tolerance, so key rotation
     * at the authorization server is picked up automatically and transient JWKS
     * outages do not take the API down.
+    *
+    * @param introspection
+    *   optional RFC 7662 revocation check against the authorization server —
+    *   the Redis-free alternative to a distributed [[TokenDenylist]] (the
+    *   Duende pattern). Runs after local validation and the denylist; an
+    *   inactive token is rejected `invalid_token`, an unreachable endpoint
+    *   fails closed as 503. Build a second validator without it for route
+    *   groups that should not pay the network hop.
     */
   def remote[F[_]: Sync](
       config: AuthConfig,
       events: AuthEvents[F],
-      denylist: TokenDenylist[F]
+      denylist: TokenDenylist[F],
+      introspection: Option[TokenIntrospection[F]] = None
   ): F[JwtValidator[F]] =
     Sync[F]
       .delay {
@@ -61,7 +71,7 @@ object JwtValidator {
           .outageTolerant(config.jwksOutageTtl.toMillis)
           .build()
       }
-      .map(fromKeySource(config, _, events, denylist))
+      .map(fromKeySource(config, _, events, denylist, introspection))
 
   /** Build a validator over an explicit key source — used in tests and for
     * non-HTTP key distribution.
@@ -70,15 +80,17 @@ object JwtValidator {
       config: AuthConfig,
       keySource: JWKSource[SecurityContext],
       events: AuthEvents[F],
-      denylist: TokenDenylist[F]
+      denylist: TokenDenylist[F],
+      introspection: Option[TokenIntrospection[F]] = None
   ): JwtValidator[F] =
-    new Impl[F](config, keySource, events, denylist)
+    new Impl[F](config, keySource, events, denylist, introspection)
 
   private final class Impl[F[_]: Sync](
       config: AuthConfig,
       keySource: JWKSource[SecurityContext],
       events: AuthEvents[F],
-      denylist: TokenDenylist[F]
+      denylist: TokenDenylist[F],
+      introspection: Option[TokenIntrospection[F]]
   ) extends JwtValidator[F] {
 
     private val processor: DefaultJWTProcessor[SecurityContext] = {
@@ -117,7 +129,7 @@ object JwtValidator {
           .blocking(processor.process(SignedJWT.parse(token), null))
           .attempt
           .flatMap {
-            case Right(claims)           => checkDenylist(claims)
+            case Right(claims)           => checkDenylist(token, claims)
             case Left(e: ParseException) =>
               reject(AuthError.InvalidToken.Malformed, e.getMessage)
             case Left(e: BadJOSEException) =>
@@ -135,16 +147,43 @@ object JwtValidator {
     // to look up — keep `"jti"` in requiredClaims (the default does) so tokens
     // cannot dodge the denylist by omitting it.
     private def checkDenylist(
+        token: String,
         claims: JWTClaimsSet
     ): F[Either[AuthError, AuthContext]] =
       Option(claims.getJWTID) match {
         case None =>
-          accept(claims)
+          checkIntrospection(token, claims)
         case Some(jti) =>
           denylist.isRevoked(jti).flatMap {
             case true =>
               reject(AuthError.InvalidToken.Revoked, s"jti $jti is denylisted")
-            case false => accept(claims)
+            case false => checkIntrospection(token, claims)
+          }
+      }
+
+    // RFC 7662 revocation check against the AS (the Duende `introspect` flag):
+    // last, because it is the only step that costs a network hop. Inactive →
+    // revoked; endpoint unavailable → fail closed as 503, never accept a token
+    // we cannot prove active.
+    private def checkIntrospection(
+        token: String,
+        claims: JWTClaimsSet
+    ): F[Either[AuthError, AuthContext]] =
+      introspection match {
+        case None    => accept(claims)
+        case Some(i) =>
+          i.check(token).flatMap {
+            case TokenIntrospection.Result.Active   => accept(claims)
+            case TokenIntrospection.Result.Inactive =>
+              reject(
+                AuthError.InvalidToken.Revoked,
+                "introspection reports token inactive"
+              )
+            case TokenIntrospection.Result.Unavailable =>
+              reject(
+                AuthError.ValidationUnavailable,
+                "introspection endpoint unavailable"
+              )
           }
       }
 

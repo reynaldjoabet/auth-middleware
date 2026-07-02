@@ -10,6 +10,12 @@ import sage.commands.{Commands, SetExpiry}
 
 /** A distributed [[auth.TokenDenylist]] backed by Redis/Valkey via Sage.
   *
+  * Optional since [[auth.TokenIntrospection]] exists: introspecting against the
+  * authorization server (RFC 7662) gives the same immediate, cluster-wide
+  * revocation without any shared store — see `JwtValidator.remote`'s
+  * `introspection` parameter. Keep this only if the AS offers no introspection
+  * endpoint or its latency is unacceptable even behind the cache.
+  *
   * Revocation is shared across every instance of the service — unlike the
   * in-memory Caffeine path, a token revoked on one node is rejected on all of
   * them. A revoked `jti` is stored as a key with a TTL equal to the token's

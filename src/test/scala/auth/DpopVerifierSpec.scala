@@ -3,68 +3,19 @@ package auth
 import scala.concurrent.duration.*
 
 import cats.effect.IO
-import cats.effect.kernel.Resource
 import com.nimbusds.jose.JOSEObjectType
-import munit.CatsEffectSuite
-import org.http4s.dsl.Http4sDsl
-import org.http4s.implicits.*
-import org.http4s.{AuthedRoutes, HttpApp, Method, Request, Response, Status}
+import org.http4s.{Method, Request, Response, Status}
 import org.typelevel.ci.*
 
-import io.github.iltotore.iron.*
-
-class DpopSpec extends CatsEffectSuite {
+class DpopVerifierSpec extends DpopBaseSuite {
   import TestTokens.*
-
-  private object dsl extends Http4sDsl[IO]
-  import dsl.*
-
-  private val accountsUri = uri"https://api.test.example/accounts"
-
-  private val validator =
-    JwtValidator.fromKeySource[IO](
-      config,
-      keySource,
-      AuthEvents.noop[IO],
-      TokenDenylist.none[IO]
-    )
-
-  private val routes: AuthedRoutes[AuthContext, IO] = AuthedRoutes.of {
-    case GET -> Root / "accounts" as ctx => Ok(ctx.subject.value: String)
-  }
-
-  private def app(
-      policy: SenderConstraintPolicy = SenderConstraintPolicy.EnforceWhenBound
-  ): Resource[IO, HttpApp[IO]] =
-    DpopVerifier.default[IO](DpopConfig(), AuthEvents.noop[IO]).map {
-      verifier =>
-        BearerAuth
-          .middleware(
-            validator,
-            AuthEvents.noop[IO],
-            senderConstraint = policy,
-            dpop = Some(verifier)
-          )
-          .apply(routes)
-          .orNotFound
-    }
-
-  private def dpopRequest(token: String, proof: String): Request[IO] =
-    Request[IO](Method.GET, accountsUri)
-      .putHeaders(
-        org.http4s.Header.Raw(ci"Authorization", s"DPoP $token"),
-        org.http4s.Header.Raw(ci"DPoP", proof)
-      )
-
-  private def bearerRequest(token: String): Request[IO] =
-    Request[IO](Method.GET, accountsUri)
-      .putHeaders(org.http4s.Header.Raw(ci"Authorization", s"Bearer $token"))
 
   private def assertDpopRejected(resp: Response[IO]): IO[Unit] = IO {
     assertEquals(resp.status, Status.Unauthorized)
-    val challenge =
-      resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
-    assert(challenge.contains("""error="invalid_dpop_proof""""), challenge)
+    assert(
+      challengeOf(resp).contains("""error="invalid_dpop_proof""""),
+      challengeOf(resp)
+    )
   }
 
   test("accepts a DPoP-bound token with a valid proof") {
@@ -187,9 +138,10 @@ class DpopSpec extends CatsEffectSuite {
     app().use { a =>
       a.run(bearerRequest(token)).map { resp =>
         assertEquals(resp.status, Status.Unauthorized)
-        val challenge =
-          resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
-        assert(challenge.contains("""error="invalid_token""""), challenge)
+        assert(
+          challengeOf(resp).contains("""error="invalid_token""""),
+          challengeOf(resp)
+        )
       }
     }
   }
@@ -217,9 +169,10 @@ class DpopSpec extends CatsEffectSuite {
       )
       .map { resp =>
         assertEquals(resp.status, Status.Unauthorized)
-        val challenge =
-          resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
-        assert(challenge.contains("""error="invalid_token""""), challenge)
+        assert(
+          challengeOf(resp).contains("""error="invalid_token""""),
+          challengeOf(resp)
+        )
       }
   }
 
@@ -228,9 +181,10 @@ class DpopSpec extends CatsEffectSuite {
     app(SenderConstraintPolicy.Required).use { a =>
       a.run(bearerRequest(token)).map { resp =>
         assertEquals(resp.status, Status.Unauthorized)
-        val challenge =
-          resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
-        assert(challenge.contains("sender-constrained"), challenge)
+        assert(
+          challengeOf(resp).contains("sender-constrained"),
+          challengeOf(resp)
+        )
       }
     }
   }
@@ -258,10 +212,14 @@ class DpopSpec extends CatsEffectSuite {
     app().use { a =>
       a.run(Request[IO](Method.GET, accountsUri)).map { resp =>
         assertEquals(resp.status, Status.Unauthorized)
-        val challenge =
-          resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
-        assert(challenge.contains("""Bearer realm="api""""), challenge)
-        assert(challenge.contains("""DPoP algs="ES256 PS256""""), challenge)
+        assert(
+          challengeOf(resp).contains("""Bearer realm="api""""),
+          challengeOf(resp)
+        )
+        assert(
+          challengeOf(resp).contains("""DPoP algs="ES256 PS256""""),
+          challengeOf(resp)
+        )
       }
     }
   }

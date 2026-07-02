@@ -48,10 +48,15 @@ lazy val root = (project in file("."))
       ironPureconfig,
       pureconfig,
       pureconfigGeneric,
-      caffeine,
+      Dependencies.caffeine,
+      Dependencies.hikaricp,
+      Dependencies.postgres % Runtime,
+      Dependencies.logback % Runtime,
       otelJava,
       "io.opentelemetry" % "opentelemetry-exporter-otlp" % "1.63.0" % Runtime,
-      "io.opentelemetry" % "opentelemetry-sdk-extension-autoconfigure" % "1.63.0" % Runtime
+      "io.opentelemetry" % "opentelemetry-sdk-extension-autoconfigure" % "1.63.0" % Runtime,
+      Dependencies.sageClientCe,
+      Dependencies.sageClientZio
     )
   )
 
@@ -61,4 +66,3 @@ addCommandAlias("fmt", "scalafmtAll; scalafmtSbt")
 addCommandAlias("fmtCheck", "scalafmtCheckAll; scalafmtSbtCheck")
 
 Test / parallelExecution := true
-ThisBuild / usePipelining := true

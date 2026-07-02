@@ -109,15 +109,17 @@ object TestTokens {
       jti: String = java.util.UUID.randomUUID().toString,
       iatOffset: FiniteDuration = 0.seconds,
       typ: JOSEObjectType = new JOSEObjectType("dpop+jwt"),
-      ath: Option[String] = None
+      ath: Option[String] = None,
+      nonce: Option[String] = None
   ): String = {
-    val claimsSet = new JWTClaimsSet.Builder()
+    val b = new JWTClaimsSet.Builder()
       .jwtID(jti)
       .claim("htm", method)
       .claim("htu", htu)
       .issueTime(new Date(System.currentTimeMillis() + iatOffset.toMillis))
       .claim("ath", ath.getOrElse(DpopVerifier.accessTokenHash(accessToken)))
-      .build()
+    nonce.foreach(b.claim("nonce", _))
+    val claimsSet = b.build()
     val jwt = new SignedJWT(
       new JWSHeader.Builder(JWSAlgorithm.ES256)
         .`type`(typ)

@@ -237,6 +237,12 @@ object Dependencies {
 
   lazy val otelJava = "org.typelevel" %% "otel4s-oteljava" % Version.otel4s
 
+  // Redis/Valkey client (Sage) — recovered after the Dependencies.scala wipe.
+  lazy val sageClientCe =
+    "com.github.ghostdogpr" %% "sage-client-ce" % "0.1.1"
+  lazy val sageClientZio =
+    "com.github.ghostdogpr" %% "sage-client-zio" % "0.1.1"
+
   // Logging
   lazy val scribe = "com.outr" %% "scribe" % Version.scribe
   lazy val scribeSlf4j =

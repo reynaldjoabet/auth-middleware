@@ -7,7 +7,7 @@ import org.http4s.Status
   * rejection of unknown nonces, and §8.2 rotation (a fresh `DPoP-Nonce` on
   * every response to a DPoP request).
   */
-class DpopNonceStoreSpec extends DpopBaseSuite {
+class DpopNonceValidatorSpec extends DpopBaseSuite {
   import TestTokens.*
 
   test(

@@ -1,4 +1,5 @@
 package auth
+import auth.revocation.{TokenDenylist, TokenIntrospection}
 
 import scala.concurrent.duration.*
 

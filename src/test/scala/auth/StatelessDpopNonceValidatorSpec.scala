@@ -1,4 +1,5 @@
 package auth
+import auth.dpop.DpopNonceValidator
 
 import java.nio.charset.StandardCharsets
 import java.util.Base64
@@ -16,12 +17,14 @@ import org.http4s.Status
   * property (any holder of the key validates any node's nonce), rejection of
   * foreign/tampered/expired values, and the middleware handshake.
   */
-class StatelessDpopNonceStoreSpec extends DpopBaseSuite {
-  import DpopNonceStore.Status as NonceStatus
+class StatelessDpopNonceValidatorSpec extends DpopBaseSuite {
+  import DpopNonceValidator.Status as NonceStatus
   import TestTokens.*
 
-  private def newStore: IO[DpopNonceStore[IO]] =
-    DpopNonceStore.randomKey[IO].flatMap(DpopNonceStore.stateless[IO](_))
+  private def newStore: IO[DpopNonceValidator[IO]] =
+    DpopNonceValidator
+      .randomKey[IO]
+      .flatMap(DpopNonceValidator.stateless[IO](_))
 
   test("issue → validate round-trips") {
     for {
@@ -35,9 +38,9 @@ class StatelessDpopNonceStoreSpec extends DpopBaseSuite {
     "multi-node: a nonce minted by one store validates on another sharing the key"
   ) {
     for {
-      key <- DpopNonceStore.randomKey[IO]
-      nodeA <- DpopNonceStore.stateless[IO](key)
-      nodeB <- DpopNonceStore.stateless[IO](key)
+      key <- DpopNonceValidator.randomKey[IO]
+      nodeA <- DpopNonceValidator.stateless[IO](key)
+      nodeB <- DpopNonceValidator.stateless[IO](key)
       nonce <- nodeA.issue
       status <- nodeB.validate(nonce.value: String)
     } yield assertEquals(status, NonceStatus.Valid)
@@ -50,6 +53,25 @@ class StatelessDpopNonceStoreSpec extends DpopBaseSuite {
       foreign <- theirs.issue
       status <- ours.validate(foreign.value: String)
     } yield assertEquals(status, NonceStatus.Unacceptable)
+  }
+
+  test(
+    "key rotation: a nonce minted under the retired key stays valid while it is in previousKeys"
+  ) {
+    for {
+      oldKey <- DpopNonceValidator.randomKey[IO]
+      newKey <- DpopNonceValidator.randomKey[IO]
+      before <- DpopNonceValidator.stateless[IO](oldKey)
+      nonce <- before.issue
+      rotated <- DpopNonceValidator
+        .stateless[IO](newKey, previousKeys = List(oldKey))
+      dropped <- DpopNonceValidator.stateless[IO](newKey)
+      graced <- rotated.validate(nonce.value: String)
+      rejected <- dropped.validate(nonce.value: String)
+    } yield {
+      assertEquals(graced, NonceStatus.Valid)
+      assertEquals(rejected, NonceStatus.Unacceptable)
+    }
   }
 
   test("a tampered nonce fails the AEAD tag check") {
@@ -77,8 +99,8 @@ class StatelessDpopNonceStoreSpec extends DpopBaseSuite {
 
   test("a nonce older than its lifetime is unacceptable") {
     for {
-      key <- DpopNonceStore.randomKey[IO]
-      store <- DpopNonceStore.stateless[IO](key)
+      key <- DpopNonceValidator.randomKey[IO]
+      store <- DpopNonceValidator.stateless[IO](key)
       now <- IO.realTime.map(_.toSeconds)
       stale <- IO(encryptTimestamp(key, now - 3600))
       status <- store.validate(stale)
@@ -87,8 +109,8 @@ class StatelessDpopNonceStoreSpec extends DpopBaseSuite {
 
   test("a nonce from the future beyond the forward skew is unacceptable") {
     for {
-      key <- DpopNonceStore.randomKey[IO]
-      store <- DpopNonceStore.stateless[IO](key)
+      key <- DpopNonceValidator.randomKey[IO]
+      store <- DpopNonceValidator.stateless[IO](key)
       now <- IO.realTime.map(_.toSeconds)
       future <- IO(encryptTimestamp(key, now + 3600))
       status <- store.validate(future)
@@ -115,8 +137,8 @@ class StatelessDpopNonceStoreSpec extends DpopBaseSuite {
       shared: Option[SecretKey] = None
   ): Resource[IO, org.http4s.HttpApp[IO]] =
     Resource
-      .eval(shared.fold(DpopNonceStore.randomKey[IO])(IO.pure))
-      .flatMap(key => Resource.eval(DpopNonceStore.stateless[IO](key)))
+      .eval(shared.fold(DpopNonceValidator.randomKey[IO])(IO.pure))
+      .flatMap(key => Resource.eval(DpopNonceValidator.stateless[IO](key)))
       .flatMap(store => app(nonces = Some(store)))
 
   test("middleware: proof without a nonce is challenged, retry succeeds") {
@@ -153,8 +175,8 @@ class StatelessDpopNonceStoreSpec extends DpopBaseSuite {
   ) {
     val token = sign(dpopBoundClaims())
     val nodes = for {
-      key <- Resource.eval(DpopNonceStore.randomKey[IO])
-      issuerNode <- Resource.eval(DpopNonceStore.stateless[IO](key))
+      key <- Resource.eval(DpopNonceValidator.randomKey[IO])
+      issuerNode <- Resource.eval(DpopNonceValidator.stateless[IO](key))
       validatorNode <- statelessApp(shared = Some(key))
     } yield (issuerNode, validatorNode)
 

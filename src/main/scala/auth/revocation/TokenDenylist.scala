@@ -1,4 +1,5 @@
 package auth
+package revocation
 
 import cats.Applicative
 

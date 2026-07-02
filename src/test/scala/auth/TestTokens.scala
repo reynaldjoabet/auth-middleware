@@ -1,4 +1,5 @@
 package auth
+import auth.dpop.DpopVerifier
 
 import java.net.URI
 import java.util.Date

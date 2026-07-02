@@ -1,4 +1,5 @@
 package auth
+import auth.revocation.TokenDenylist
 
 import cats.effect.IO
 import munit.CatsEffectSuite

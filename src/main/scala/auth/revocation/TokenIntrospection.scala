@@ -1,4 +1,5 @@
 package auth
+package revocation
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest

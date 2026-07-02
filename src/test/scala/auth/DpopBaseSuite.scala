@@ -1,4 +1,6 @@
 package auth
+import auth.dpop.{DpopConfig, DpopNonceValidator, DpopVerifier}
+import auth.revocation.TokenDenylist
 
 import cats.effect.IO
 import cats.effect.kernel.Resource
@@ -15,8 +17,9 @@ import org.typelevel.ci.*
 
 /** Shared fixtures for the DPoP suites: a validator over the test JWKS, a
   * trivial protected route, and helpers to build DPoP requests and read
-  * challenge headers. [[DpopVerifierSpec]] and [[DpopNonceStoreSpec]] extend
-  * this, mirroring the split between `DpopVerifier` and `DpopNonceStore`.
+  * challenge headers. [[DpopVerifierSpec]] and [[DpopNonceValidatorSpec]]
+  * extend this, mirroring the split between `DpopVerifier` and
+  * `DpopNonceValidator`.
   */
 abstract class DpopBaseSuite extends CatsEffectSuite {
   import TestTokens.*
@@ -43,7 +46,7 @@ abstract class DpopBaseSuite extends CatsEffectSuite {
     */
   protected def app(
       policy: SenderConstraintPolicy = SenderConstraintPolicy.EnforceWhenBound,
-      nonces: Option[DpopNonceStore[IO]] = None
+      nonces: Option[DpopNonceValidator[IO]] = None
   ): Resource[IO, HttpApp[IO]] =
     DpopVerifier
       .default[IO](DpopConfig(), AuthEvents.noop[IO], nonces = nonces)
@@ -61,7 +64,7 @@ abstract class DpopBaseSuite extends CatsEffectSuite {
 
   protected def appWithNonces: Resource[IO, HttpApp[IO]] =
     Resource
-      .eval(DpopNonceStore.inMemory[IO]())
+      .eval(DpopNonceValidator.inMemory[IO]())
       .flatMap(store => app(nonces = Some(store)))
 
   protected def dpopRequest(token: String, proof: String): Request[IO] =

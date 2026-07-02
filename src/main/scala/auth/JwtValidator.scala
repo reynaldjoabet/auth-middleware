@@ -21,6 +21,8 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import com.nimbusds.oauth2.sdk.auth.X509CertificateConfirmation
 import com.nimbusds.oauth2.sdk.dpop.JWKThumbprintConfirmation
 
+import auth.revocation.{TokenDenylist, TokenIntrospection}
+
 /** Validates OAuth 2.0 JWT access tokens (RFC 9068 profile). */
 trait JwtValidator[F[_]] {
 

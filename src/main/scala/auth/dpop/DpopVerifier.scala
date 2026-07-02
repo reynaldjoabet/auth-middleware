@@ -1,4 +1,5 @@
 package auth
+package dpop
 
 import java.net.URI
 import java.nio.charset.StandardCharsets
@@ -84,7 +85,7 @@ trait DpopVerifier[F[_]] {
     * DPoP-scheme request carries a fresh `DPoP-Nonce` header (§8.2), so a
     * well-behaved client never needs a challenge round trip after the first.
     */
-  def nonces: Option[DpopNonceStore[F]]
+  def nonces: Option[DpopNonceValidator[F]]
 
   /** Verify the `DPoP` header of `req` against this request, the presented
     * access token and the token's `cnf.jkt` thumbprint (RFC 9449 §4.3).
@@ -160,7 +161,7 @@ object DpopVerifier {
   def default[F[_]: Sync](
       config: DpopConfig,
       events: AuthEvents[F],
-      nonces: Option[DpopNonceStore[F]] = None,
+      nonces: Option[DpopNonceValidator[F]] = None,
       singleUseChecker: Option[SingleUseChecker[DPoPProofUse]] = None
   ): Resource[F, DpopVerifier[F]] =
     Resource
@@ -202,7 +203,7 @@ object DpopVerifier {
 
           val algorithms: Set[JWSAlgorithm] = config.allowedAlgorithms
 
-          val nonces: Option[DpopNonceStore[F]] = defaultNonces
+          val nonces: Option[DpopNonceValidator[F]] = defaultNonces
 
           def verify(
               req: Request[F],
@@ -247,7 +248,7 @@ object DpopVerifier {
                             case None            => challenge(store)
                             case Some(presented) =>
                               store.validate(presented).flatMap {
-                                case DpopNonceStore.Status.Valid =>
+                                case DpopNonceValidator.Status.Valid =>
                                   runNimbus(
                                     req,
                                     accessToken,
@@ -255,7 +256,7 @@ object DpopVerifier {
                                     proof,
                                     new Nonce(presented)
                                   )
-                                case DpopNonceStore.Status.Unacceptable =>
+                                case DpopNonceValidator.Status.Unacceptable =>
                                   challenge(store)
                               }
                           }
@@ -319,7 +320,7 @@ object DpopVerifier {
               }
 
           /** Read the proof's `nonce` claim without trusting it — it is only a
-            * lookup key into [[DpopNonceStore]], which authenticates it.
+            * lookup key into [[DpopNonceValidator]], which authenticates it.
             */
           private def nonceClaimOf(proof: SignedJWT): Option[String] =
             try
@@ -332,7 +333,7 @@ object DpopVerifier {
             * challenge is routine protocol flow, not a denial.
             */
           private def challenge(
-              store: DpopNonceStore[F]
+              store: DpopNonceValidator[F]
           ): F[Either[AuthError, Unit]] =
             store.issue.flatMap { nonce =>
               val err = AuthError.UseDpopNonce(nonce)

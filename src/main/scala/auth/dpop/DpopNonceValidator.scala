@@ -1,4 +1,5 @@
 package auth
+package dpop
 
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
@@ -14,7 +15,8 @@ import cats.syntax.all.*
 import com.github.benmanes.caffeine.cache.Caffeine
 import com.nimbusds.openid.connect.sdk.Nonce
 
-/** Resource-server-provided DPoP nonces (RFC 9449 §8-9).
+/** Issues and validates resource-server-provided DPoP nonces (RFC 9449 §8-9) —
+  * the counterpart of Duende's `IDPoPNonceValidator`.
   *
   * When a [[DpopVerifier]] is given one of these, it refuses a proof that does
   * not carry a fresh, server-minted `nonce` claim: the client is told to retry
@@ -24,21 +26,24 @@ import com.nimbusds.openid.connect.sdk.Nonce
   * jti single-use detection never sees the honest request. See
   * [[SenderConstraintPolicy]] for why mTLS binding is not vulnerable here.
   *
-  * A nonce is single-use: [[validate]] consumes it, so a replayed proof carries
-  * a nonce that no longer verifies and is re-challenged.
+  * Two adapters with different strength/operability trades:
+  *   - [[DpopNonceValidator.inMemory]] — strictly single-use, per node
+  *   - [[DpopNonceValidator.stateless]] — encrypted-timestamp freshness proof,
+  *     multi-node with a shared key and no store (Duende's design)
   */
-trait DpopNonceStore[F[_]] {
+trait DpopNonceValidator[F[_]] {
 
   /** Mint a fresh nonce to hand to the client in a `DPoP-Nonce` header. */
   def issue: F[DpopNonce]
 
-  /** Consume a client-presented nonce. [[DpopNonceStore.Status.Valid]] iff it
-    * is one this server issued, still within its lifetime, and not yet used.
+  /** Check a client-presented nonce. [[DpopNonceValidator.Status.Valid]] iff
+    * this server (or a peer sharing its key/store) issued it and it is still
+    * acceptable under the adapter's semantics.
     */
-  def validate(presented: String): F[DpopNonceStore.Status]
+  def validate(presented: String): F[DpopNonceValidator.Status]
 }
 
-object DpopNonceStore {
+object DpopNonceValidator {
 
   enum Status derives CanEqual {
     case Valid
@@ -68,7 +73,7 @@ object DpopNonceStore {
   def inMemory[F[_]: Sync](
       ttl: FiniteDuration = 5.minutes,
       maxEntries: Long = 100_000L
-  ): F[DpopNonceStore[F]] =
+  ): F[DpopNonceValidator[F]] =
     Sync[F].delay {
       val cache =
         Caffeine
@@ -77,7 +82,7 @@ object DpopNonceStore {
           .maximumSize(maxEntries)
           .build[String, java.lang.Boolean]()
 
-      new DpopNonceStore[F] {
+      new DpopNonceValidator[F] {
         def issue: F[DpopNonce] =
           Sync[F].delay {
             // Nimbus Nonce() = 32 bytes of SecureRandom, base64url (43 chars)
@@ -114,10 +119,18 @@ object DpopNonceStore {
     * fresh value and only pays a `use_dpop_nonce` round trip after idling past
     * `lifetime`.
     *
+    * Key rotation is first-class, mirroring ASP.NET DataProtection's key ring
+    * (which Duende gets for free): mint with `key`, accept with `key` or any of
+    * `previousKeys`. Roll a key by moving it to `previousKeys` and deploying a
+    * fresh `key`; in-flight nonces stay valid, and the old key can be dropped
+    * one nonce-`lifetime` later.
+    *
     * @param key
     *   AES key (128/192/256-bit) shared by every node — distribute via your
     *   secret manager, rotate like any other service credential. Use
     *   [[randomKey]] only for single-node or test deployments.
+    * @param previousKeys
+    *   retired minting keys still accepted for validation during rotation
     * @param lifetime
     *   how long an issued nonce stays acceptable
     * @param forwardSkew
@@ -127,13 +140,15 @@ object DpopNonceStore {
     */
   def stateless[F[_]: Sync](
       key: SecretKey,
+      previousKeys: List[SecretKey] = Nil,
       lifetime: FiniteDuration = 5.minutes,
       forwardSkew: FiniteDuration = 5.seconds
-  ): F[DpopNonceStore[F]] =
+  ): F[DpopNonceValidator[F]] =
     Sync[F].delay {
       val random = new SecureRandom()
+      val acceptedKeys = key :: previousKeys
 
-      new DpopNonceStore[F] {
+      new DpopNonceValidator[F] {
         def issue: F[DpopNonce] =
           Sync[F].realTime.flatMap { now =>
             Sync[F].delay {
@@ -162,45 +177,48 @@ object DpopNonceStore {
         def validate(presented: String): F[Status] =
           Sync[F].realTime.flatMap { now =>
             Sync[F].delay {
-              // AEAD authentication makes a forged/foreign-key nonce fail the
-              // doFinal tag check; anything unparsable is simply re-challenged.
-              try {
-                if (presented.isEmpty || presented.length > 512)
-                  Status.Unacceptable
-                else {
-                  val in = Base64.getUrlDecoder.decode(presented)
-                  if (in.length <= StatelessIvBytes) Status.Unacceptable
-                  else {
-                    val cipher = Cipher.getInstance(StatelessCipher)
-                    cipher.init(
-                      Cipher.DECRYPT_MODE,
-                      key,
-                      new GCMParameterSpec(
-                        StatelessTagBits,
-                        in,
-                        0,
-                        StatelessIvBytes
-                      )
-                    )
-                    val plaintext = cipher.doFinal(
-                      in,
-                      StatelessIvBytes,
-                      in.length - StatelessIvBytes
-                    )
-                    val issuedAt =
-                      new String(plaintext, StandardCharsets.US_ASCII).toLong
-                    val nowSeconds = now.toSeconds
-                    val fresh =
-                      nowSeconds - issuedAt <= lifetime.toSeconds &&
-                        issuedAt - nowSeconds <= forwardSkew.toSeconds
-                    if (fresh) Status.Valid else Status.Unacceptable
-                  }
+              if (presented.isEmpty || presented.length > 512)
+                Status.Unacceptable
+              else {
+                // AEAD authentication makes a forged/foreign-key nonce fail
+                // the tag check; anything unparsable is simply re-challenged.
+                val decoded =
+                  try Some(Base64.getUrlDecoder.decode(presented))
+                  catch { case _: IllegalArgumentException => None }
+                decoded.filter(_.length > StatelessIvBytes) match {
+                  case None     => Status.Unacceptable
+                  case Some(in) =>
+                    val issuedAt = acceptedKeys.iterator
+                      .map(decryptTimestamp(_, in))
+                      .collectFirst { case Some(t) => t }
+                    issuedAt match {
+                      case None    => Status.Unacceptable
+                      case Some(t) =>
+                        val nowSeconds = now.toSeconds
+                        val fresh =
+                          nowSeconds - t <= lifetime.toSeconds &&
+                            t - nowSeconds <= forwardSkew.toSeconds
+                        if (fresh) Status.Valid else Status.Unacceptable
+                    }
                 }
-              } catch { case _: Exception => Status.Unacceptable }
+              }
             }
           }
       }
     }
+
+  private def decryptTimestamp(key: SecretKey, in: Array[Byte]): Option[Long] =
+    try {
+      val cipher = Cipher.getInstance(StatelessCipher)
+      cipher.init(
+        Cipher.DECRYPT_MODE,
+        key,
+        new GCMParameterSpec(StatelessTagBits, in, 0, StatelessIvBytes)
+      )
+      val plaintext =
+        cipher.doFinal(in, StatelessIvBytes, in.length - StatelessIvBytes)
+      new String(plaintext, StandardCharsets.US_ASCII).toLongOption
+    } catch { case _: Exception => None }
 
   /** A fresh 256-bit AES key for [[stateless]]. Single-node/test convenience:
     * nonces die with the process and no other node can validate them — in

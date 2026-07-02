@@ -17,6 +17,7 @@ import org.http4s.{
   Status
 }
 import org.typelevel.ci.*
+import auth.dpop.DpopVerifier
 import auth.given
 
 /** http4s middleware enforcing OAuth 2.0 access-token authentication for

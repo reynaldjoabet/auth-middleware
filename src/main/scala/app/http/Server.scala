@@ -1,6 +1,7 @@
 package app.http
 
-import auth.{AuthEvents, BearerAuth, JwtValidator, TokenDenylist}
+import auth.revocation.TokenDenylist
+import auth.{AuthEvents, BearerAuth, JwtValidator}
 import cats.effect.{Async, Resource}
 import fs2.io.net.Network
 import org.http4s.ember.server.EmberServerBuilder

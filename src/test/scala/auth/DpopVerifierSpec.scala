@@ -1,5 +1,7 @@
 package auth
 
+import auth.dpop.{DpopConfig, DpopVerifier}
+
 import cats.effect.IO
 import com.nimbusds.jose.JOSEObjectType
 import org.http4s.Method

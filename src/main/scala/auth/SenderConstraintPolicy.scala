@@ -15,10 +15,10 @@ package auth
   * request — or blocks the honest one so the RS never sees it — can present the
   * proof over its own TLS connection, and per-node jti single-use detection
   * cannot fire on a request the RS never received. The mitigation is
-  * RS-provided nonces ([[DpopNonceStore]]). mTLS sender-constraining has no
-  * such gap: the attacker cannot open an mTLS connection with the client's key,
-  * so a stolen certificate-bound token is unusable. Prefer mTLS, or DPoP *with*
-  * enforced nonces, for the highest-value resources.
+  * RS-provided nonces ([[dpop.DpopNonceValidator]]). mTLS sender-constraining
+  * has no such gap: the attacker cannot open an mTLS connection with the
+  * client's key, so a stolen certificate-bound token is unusable. Prefer mTLS,
+  * or DPoP *with* enforced nonces, for the highest-value resources.
   */
 
 enum SenderConstraintPolicy derives CanEqual {

@@ -41,6 +41,9 @@ import auth.given
   *     `400 invalid_request`
   *   - failed validation or binding → `401 invalid_token`
   *   - missing/invalid/replayed DPoP proof → `401 invalid_dpop_proof`
+  *   - nonce enforcement on (RFC 9449 §8): a proof without a fresh
+  *     server-provided nonce → `401 use_dpop_nonce` + `DPoP-Nonce`; every
+  *     response to a DPoP request carries a fresh `DPoP-Nonce` for rotation
   *   - valid token but missing scopes → `403 insufficient_scope`
   *   - valid token but insufficient `acr` / stale `auth_time` →
   *     `401 insufficient_user_authentication`
@@ -48,7 +51,9 @@ import auth.given
   *
   * Error bodies and challenge parameters only ever contain fixed,
   * library-controlled strings — no token contents, claim values or upstream
-  * error messages.
+  * error messages. The one dynamic value is the `DPoP-Nonce` header: a
+  * server-minted random nonce (RFC 9449 §8), never derived from token
+  * material.
   */
 object BearerAuth {
 
@@ -188,8 +193,41 @@ object BearerAuth {
         OptionT.pure[F](errorResponse(req.context, realm, dpopAlgs))
       )
 
-    AuthMiddleware(authenticate, onFailure)
+    val base = AuthMiddleware(authenticate, onFailure)
+
+    // RFC 9449 §8.2 nonce rotation: when nonces are enforced, every response
+    // to a DPoP-scheme request carries a fresh `DPoP-Nonce` (unless one is
+    // already set, e.g. by the use_dpop_nonce challenge). Rotating on success
+    // keeps steady state at one round trip per call; rotating on failure hands
+    // the client the nonce it needs to recover immediately — a proof rejected
+    // after its nonce was consumed would otherwise cost two more round trips.
+    dpop.flatMap(_.nonces) match {
+      case None => base
+      case Some(store) =>
+        routes =>
+          Kleisli { (req: Request[F]) =>
+            base(routes)(req).semiflatMap { resp =>
+              if (
+                !usesDpopScheme(req) ||
+                resp.headers.get(DpopNonceHeader).isDefined
+              )
+                resp.pure[F]
+              else
+                store.issue.map(n =>
+                  resp.putHeaders(Header.Raw(DpopNonceHeader, n.value: String))
+                )
+            }
+          }
+    }
   }
+
+  private val DpopNonceHeader = ci"DPoP-Nonce"
+
+  private def usesDpopScheme[F[_]](req: Request[F]): Boolean =
+    req.headers.get[Authorization].exists {
+      case Authorization(Credentials.Token(scheme, _)) => scheme == DpopScheme
+      case _                                           => false
+    }
 
   /** Require every scope in `required` on top of authentication. Compose per
     * route group, e.g. `requireScopes(Set("payments:write"))(paymentRoutes)`.
@@ -354,6 +392,7 @@ object BearerAuth {
     def withDpopChallenge(challenge: String): String =
       (challenge :: dpopAlgs.map(a => s"""DPoP algs="$a"""").toList)
         .mkString(", ")
+    val algsParam = dpopAlgs.fold("")(a => s""", algs="$a"""")
 
     error match {
       case AuthError.MissingToken =>
@@ -377,12 +416,21 @@ object BearerAuth {
           body = Some(("invalid_token", reason))
         )
       case AuthError.InvalidDpopProof(reason) =>
-        val algs = dpopAlgs.fold("")(a => s""", algs="$a"""")
         challengeResponse(
           Status.Unauthorized,
-          s"""DPoP realm="$realm"$algs, error="invalid_dpop_proof", error_description="$reason"""",
+          s"""DPoP realm="$realm"$algsParam, error="invalid_dpop_proof", error_description="$reason"""",
           body = Some(("invalid_dpop_proof", reason))
         )
+      case AuthError.UseDpopNonce(nonce) =>
+        // RFC 9449 §8-9: hand the client a fresh DPoP-Nonce to echo in the
+        // `nonce` claim of its next proof. Not a hard failure — a challenge.
+        val description =
+          "a DPoP proof carrying a server-provided nonce is required"
+        challengeResponse(
+          Status.Unauthorized,
+          s"""DPoP realm="$realm"$algsParam, error="use_dpop_nonce", error_description="$description"""",
+          body = Some(("use_dpop_nonce", description))
+        ).putHeaders(Header.Raw(DpopNonceHeader, nonce.value: String))
       case AuthError.InsufficientScope(required) =>
         val scope = required.toSeq.sorted.mkString(" ")
         challengeResponse(

@@ -44,9 +44,10 @@ So both token types have an `aud` claim — but they point at different kinds of
 
 - The resource server receives an `access_token` in the `Authorization` header, and reads the `jti`, `sub`, and `scope` claims out of it. You didn't make these. Some other authorization server did, and the spec (RFC 7519 ) lets it put almost anything non-blank in a `jti`.
 
-Who authors it	Type strictness	How you build it
-TokenJwtId (mint)	your AS generates it	strict (16–256, fixed charset)	total / trusted
-ReceivedJwtId (receive)	a peer put it in a token	lenient (non-blank, ≤256)	Either (validate, can reject)
+| Newtype | Who authors it | Type strictness | How you build it |
+| --- | --- | --- | --- |
+| **TokenJwtId** (mint) | your AS generates it | strict (16–256, fixed charset) | total / trusted |
+| **ReceivedJwtId** (receive) | a peer put it in a token | lenient (non-blank, ≤256) | Either (validate, can reject) |
 
 - You mint a route requirement: `Custom(ScopeToken("partner:settlement"))`. You author that string in your own source code, so the curated strict grammar applies and it's validated at compile time — you're the authority, so a violation is your bug to fix now.
 - You receive granted scopes: the scope claim from an incoming token, parsed leniently through Inbound.scopes, dropping anything malformed — because a peer authored those and might send something off-spec.
@@ -278,7 +279,7 @@ resource.
 
 1. The client requests a protected resource, presenting an access token.
 2. The resource server determines that the circumstances in which
-the presented access token was obtained offer `insufficientauthentication` strength and/or recentness; hence, it denies the request and returns a challenge describing (using a combination of `acr_values` and `max_age`) what authentication requirements must be met for the resource server to authorize a request.
+the presented access token was obtained offer insufficient authentication strength and/or recentness; hence, it denies the request and returns a challenge describing (using a combination of `acr_values` and `max_age`) what authentication requirements must be met for the resource server to authorize a request.
 3. The client directs the user agent to the authorization server
 with an authorization request that includes the `acr_values` and/or
 `max_age` indicated by the resource server in the previous step.
@@ -374,7 +375,7 @@ With OAuth, you can achieve a similar approach where an API endpoint requires a 
 ``` 
 
 ### Why --client (the default) is actually worse in CI
-It downloads the sbtn native binary first (sbt.sh:191 acquire_sbtn) — an extra network fetch from GitHub releases that can flake or slow the job.You gain nothing, because nothing reuses that background server.
+It downloads the sbtn native binary first (sbt.sh:191 acquire_sbtn) — an extra network fetch from GitHub releases that can flake or slow the job. You gain nothing, because nothing reuses that background server.
 
 ### The recommended CI invocation
 
@@ -398,3 +399,375 @@ Every setting/task key in sbt isn't a single value — it's a value per scope. A
 - Extra axis — attribute-based, rarely used by hand.
 
 `--server` skips the whole client/server split. It runs the JVM directly in the foreground, does its work, and exits cleanly — one process, one JVM, no background leftovers.
+
+JSON- JOSE(Json object Signing and Encryption)
+
+CBOR(COSE CBOR Object Signing and Encryption)
+
+When a user approves an application's request, the Authorization Server issues an authorization grant to the client. The client then takes this grant to the token endpoint and trades it for an Access Token.
+- The Grant: The proof of permission ("The user said I could access this, and here is the cryptographic proof").
+- The Access Token: The actual, usable key to the API.
+
+A grant type is simply the specific method the application uses to get that initial proof of permission
+
+OAuth provides a method for clients to access a protected resource on behalf of a resource owner.  In the general case, before a client can access a protected resource, it must first obtain an authorization grant from the resource owner and then exchange the authorization grant for an access token.  The access token represents the grant's scope, duration, and other attributes granted by the authorization grant.  The client accesses the protected resource by presenting the access token to the resource server
+
+
+Annotation order = execution order. Play runs the first-listed annotation as the outermost wrapper, so `@Authenticated` must come first — it's what populates `SecurityAttrs.PRINCIPAL` that the others read. Keep that order on every endpoint
+
+`InvalidDPoPNonceException `extends `InvalidDPoPProofException`, so its catch block must precede the `InvalidDPoPProofException` one (it does above) or the nonce branch is unreachable 
+
+`htu` correctness is load-balancer-dependent. `req.secure()`/`req.host()` only reflect the real client-facing scheme/host if `play.http.forwarded.trustedProxies` lists your edge. Get this wrong behind TLS termination and every DPoP `htu` check fails closed
+
+Best practice for a growing system is feature modules with the layers nested inside each feature. 
+
+Layer-first (what you have — group by technical role):
+```sh
+http/      PaymentsController.scala   AccountsController.scala
+service/   PaymentService.scala       AccountService.scala
+repo/      PaymentRepo.scala          AccountRepo.scala
+db/        PaymentCodecs.scala        AccountCodecs.scala
+```
+Feature-first (group by feature, layers nested inside):
+```sh
+payments/  http/Controller   service/PaymentService   repo/PaymentRepo   db/Codecs
+accounts/  http/Controller   service/AccountService   repo/AccountRepo   db/Codecs
+```
+
+In feature-first, `payments` and `accounts` are separate packages (or sbt modules). For payments to touch accounts, it must import across a visible boundary 
+
+db is fine and clear — keep it if persistence is your only external concern. But note the scoping:
+
+`db`implies specifically database. The moment you also have Redis, Kafka, HTTP clients, S3, those are adapters too — and `db` won't house them. Then the standard umbrella is `infra` / `infrastructure`, with db as a sub-package:
+```sh
+infra/
+  postgres/      skunk repos + codecs
+  redis/   RedisTokenDenylist (your sage adapter belongs here, not in auth core)
+```
+
+The difference between domain errors and HTTP errors comes down to Separation of Concerns. They live in entirely different layers of your application and serve two distinct purposes.
+1. Domain errors describe what went wrong in your business rules. They belong in your `domain` package and know absolutely nothing about the outside world—no HTTP, no JSON, no databases.
+  - Meaningful to the Business: They describe real-world scenarios. For example, `InsufficientFunds`, `AccountFrozen`, or `InvalidSignature`.
+
+2. HTTP errors describe how to communicate the failure to a client over the web. They belong strictly in your `http` package.  
+  - Meaningful to the Client: They use standard HTTP status codes (e.g., 400 Bad Request, 401 Unauthorized, 404 Not Found, 422 Unprocessable Entity
+
+
+the `service` should return a pure domain error, and the `http` layer acts as a translator, catching the domain error and mapping it to the appropriate HTTP response.  
+
+
+Multi-transport reusability. The same domain error maps differently per transport: `HTTP 409`, `gRPC ALREADY_EXISTS`, a CLI exit code, a Kafka dead-letter. If the domain error hardcoded 409, you couldn't reuse it elsewhere.
+
+Frontend developers (or external API consumers) hate it when an API returns different error formats. If one error returns `{ "error": "bad" }` and another returns `{ "message": "failed", "code": 400 }`, it breaks their code.
+
+You use `http/errors` to define the exact JSON shape your API will always return, regardless of what went wrong inside.
+
+The scalable pattern: a `ToProblemDetails[E]` typeclass.
+Keep the format/rendering central, but let each error type own its mapping via a given instance.
+(`-no-indent` is on, so `extension` bodies need braces.)
+
+```scala
+// http/error — the contract (central). `ProblemDetails` is the RFC 7807 body.
+trait ToProblemDetails[-E] {
+  extension (error: E) def toProblemDetails: ProblemDetails
+}
+
+object ToProblemDetails {
+  // generic cross-cutting errors
+  given ToProblemDetails[AppError] with {
+    extension (error: AppError) {
+      def toProblemDetails: ProblemDetails = error match {
+        case AppError.NotFound(resource, id) => ProblemDetails("about:blank", s"$resource not found", 404, Some(s"id=$id"))
+        case AppError.Conflict(detail)       => ProblemDetails("about:blank", "Conflict", 409, Some(detail))
+        case AppError.Validation(detail)     => ProblemDetails("about:blank", "Validation failed", 422, Some(detail))
+        case AppError.Forbidden(detail)      => ProblemDetails("about:blank", "Forbidden", 403, Some(detail))
+      }
+    }
+  }
+}
+
+// a FEATURE provides its own instance (lives with the feature)
+given ToProblemDetails[CredentialError] with {
+  extension (error: CredentialError) {
+    def toProblemDetails: ProblemDetails = error match {
+      case CredentialError.CeremonyExpired => ProblemDetails("about:blank", "Ceremony expired", 410, None)
+      case CredentialError.NotFound(id)    => ProblemDetails("about:blank", "Credential not found", 404, Some(id))
+    }
+  }
+}
+```
+…and one central render path used by every route — sets the status from the
+instance and the `application/problem+json` content type:
+```scala
+// http/error/ErrorMapper.scala
+def toResponse[F[_], E: ToProblemDetails](e: E): Response[F] = {
+  given EntityEncoder[F, ProblemDetails] = jsonEncoderOf
+  val p = e.toProblemDetails
+  Response[F](Status.fromInt(p.status).getOrElse(Status.InternalServerError))
+    .withEntity(p)
+    .withContentType(`Content-Type`(ProblemDetails.MediaTypeProblemJson))
+}
+```
+
+A token is validated (it's genuine and well-formed).
+A request is authenticated 
+
+```java
+@With(RestrictToHostGroupAction.class)
+@Target({ElementType.TYPE, ElementType.METHOD})
+@Retention(RetentionPolicy.RUNTIME)
+public @interface RestrictToHostGroup {
+  String value() default "default";
+}
+```
+`@With` is Play's own `meta-annotation`. It is the wiring mechanism — the thing that says "when you see this annotation on a method or class, run these Action classes."
+
+```java
+
+/**
+ * Decorates an <code>Action</code> or a <code>Controller</code> with another <code>Action</code>.
+ */
+@Target({ElementType.TYPE, ElementType.METHOD})
+@Retention(RetentionPolicy.RUNTIME)
+public @interface With {
+  Class<? extends Action<?>>[] value();
+}
+```
+
+## Use 1 — Directly on a method/class (no custom annotation needed)
+
+```java
+// Directly tell Play: run AccessLoggingAction before this method
+@With(AccessLoggingAction.class)
+public Result index() { ... }
+
+// Multiple actions at once
+@With({FirstAction.class, SecondAction.class})
+public Result index() { ... }
+```
+In this case, `configuration` inside the action is `null` — there's no annotation carrying data.
+
+```java
+class AccessLoggingAction extends Action.Simple {  // Simple = Action<Void>
+    public CompletionStage<Result> call(Http.Request request) {
+        // no configuration to read — just do the logic
+        accessLogger.info("method={} uri={}", request.method(), request.uri());
+        return delegate.call(request);  // continue the chain
+    }
+}
+```
+
+## Use 2 — As a meta-annotation on your OWN custom annotation (the @RestrictToHostGroup pattern)
+
+This is the more powerful use. You put `@With` on your annotation definition, turning it into a self-contained, configurable interceptor.
+
+```java
+@RestrictToHostGroup("internal")
+public Result adminPage(Http.Request req) { ... }
+```
+Play sees `@RestrictToHostGroup` on the method, finds `@With` on its definition, instantiates `RestrictToHostGroupAction`, injects `configuration` with the annotation instance, and runs it
+```java
+public class RestrictToHostGroupAction extends Action<RestrictToHostGroup> {}
+```
+
+```java
+public abstract class Action<T> extends Results {
+  public T configuration;             // ← injected with the annotation instance (@RestrictToHostGroup)
+  public AnnotatedElement annotatedElement; // ← the method or class it was placed on
+  public Action<?> delegate;          // ← the next action in the chain (eventually the controller method)
+  public Action<?> precursor;         // ← the action before this one in the chain
+
+  public abstract CompletionStage<Result> call(Request req);
+}
+```
+
+The type parameter `T` is your annotation type. So in `Action<RestrictToHostGroup>`, the field configuration is automatically populated with the actual `@RestrictToHostGroup` annotation instance found on the method/class — giving you access to its `value()`
+
+So for a method annotated `@RestrictToHostGroup("internal")`:
+- action.configuration → the @RestrictToHostGroup("internal") annotation object
+- action.configuration.value() → "internal"
+- action.delegate → the next action (ultimately the controller method itself)
+
+
+Scope: Annotation can be on a method (ElementType.METHOD) or entire controller class (ElementType.TYPE)
+
+Ordering; Controlled by play.http.actionComposition.controllerAnnotationsFirst in `application.conf`
+
+```java
+public class RestrictToHostGroupAction extends Action<RestrictToHostGroup> {
+    @Override
+    public CompletionStage<Result> call(Http.Request req) {
+
+        // configuration IS a RestrictToHostGroup annotation instance
+        String group = configuration.value();  // → "default", "internal", "admin", etc.
+
+        if (!isRequestFromGroup(req, group)) {
+            return CompletableFuture.completedFuture(forbidden("Not allowed"));
+        }
+        return delegate.call(req);
+    }
+}
+```
+
+```java
+// configuration.value() → "default"
+@RestrictToHostGroup
+public Result index(Http.Request req) { ... }
+
+// configuration.value() → "internal"
+@RestrictToHostGroup("internal")
+public Result adminPage(Http.Request req) { ... }
+
+// configuration.value() → "partners"
+@RestrictToHostGroup("partners")
+public Result partnersPage(Http.Request req) { ... }
+```
+`String group = configuration != null ? configuration.value() : "default";`
+
+```c#
+// .NET
+public class RestrictToHostGroupAttribute : ActionFilterAttribute
+{
+    public string Group { get; set; } = "default";
+
+    public override void OnActionExecuting(ActionExecutingContext context)
+    {
+        if (!IsAllowedGroup(context.HttpContext, Group))
+        {
+            context.Result = new ForbidResult();
+            return;
+        }
+        base.OnActionExecuting(context); // → delegate.call(req)
+    }
+}
+
+// Usage
+[RestrictToHostGroup(Group = "internal")]
+public IActionResult AdminPage() { ... }
+```
+
+```c#
+using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.Mvc.Filters;
+
+namespace Admin.Authorization
+{
+    /// <summary>
+    /// Validates the antiforgery token for browser-authenticated requests (cookies and API key).
+    /// Bearer token authenticated requests are inherently CSRF-safe and skip validation.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
+    public class ValidateAntiforgeryTokenForCookieAuthAttribute : Attribute, IFilterFactory, IOrderedFilter
+    {
+        public int Order { get; set; } = 1000;
+
+        public bool IsReusable => true;
+
+        public IFilterMetadata CreateInstance(IServiceProvider serviceProvider)
+        {
+            return new ValidateAntiforgeryTokenForCookieAuthFilter(
+                serviceProvider.GetRequiredService<IAntiforgery>(),
+                serviceProvider.GetRequiredService<ILoggerFactory>());
+        }
+    }
+}
+```
+
+```java
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+import play.mvc.With;
+
+/** This action adds a CSRF token to the request and response if not already there. */
+@With(AddCSRFTokenAction.class)
+@Retention(RetentionPolicy.RUNTIME)
+@Target({ElementType.METHOD, ElementType.TYPE})
+public @interface AddCSRFToken {}
+```
+
+- A marker annotation carrying config (e.g. required scope, whether DPoP is mandatory).
+- A `@With(SomeAction.class)` meta-annotation wiring it to an interceptor.
+- An `Action<TheAnnotation>` subclass in `http/actions/` that runs before the controller, inspects the request, and either short-circuits with a `401/403` or calls `delegate.call(req)` to continue.
+
+Many websites and applications can be used by logging in with a so-called Identity Provider, for instance, “Login with Google” or “Login with Facebook”, generally dubbed “social login”, or more generally, Single Sign-On (SSO). There are typically three parties involved for SSO: (i) the user/the user’s browser, (ii) the identity provider (IdP), also called authorization server (AS), and (iii) the relying party (RP), also called client
+
+While plain OAuth 2.0 and OpenID Connect are suitable for typical low-risk use cases like social login, many use cases have emerged in high-risk settings for both authorization and authentication scenarios: Third-party services can be authorized to, for example, access bank transaction histories for monitoring and feedback, trigger financial transactions, access cars and medical records, or perform health-related actions like managing electronic prescriptions.
+
+while the FAPI 2.0 SP protocol requires a user-agent, e.g.,
+a user’s browser, to initiate an authorization or authentication flow, and to forward messages between the authorization server and the client, in some scenarios, e.g., for payment authorization at point-of-sale terminals, there is no such user-agent. To cover these scenarios, the FAPI-CIBA specification defines a profile of the OpenID Foundation’s Client Initiated Backchannel Authentication (CIBA)  protocol.
+
+FAPI 2.0 SP allows a user (also called resource owner) to grant a client application access to their data stored at a resource server (RS), by means of an authorization server (AS) which is responsible for managing access to the user’s data. In addition, the AS may provide the client with information on the user’s identity at the AS. For example, FAPI 2.0 SP may be used to grant an account aggregation service (client) access to a user’s account balance at various banks
+(RSs), with services of these banks (ASs) managing such access
+
+FAPI 2.0 defines two methods to establish and verify such a binding: OAuth 2.0 Demonstrating Proof-of-Possession at the Application Layer (DPoP) and mTLS. In both cases, the access token is bound to a client key pair, e.g., by including a hash of the DPoP public key or mTLS certificate in the token, and the client has to include a proof of possession of the corresponding private key when using the access token.
+With DPoP, the token request  must include a DPoP proof, consisting of a signed JWT `dpopJWT`, containing the URL to which it is sent (without parameters and fragment components), a nonce chosen by the client, and a public verification key `pub(k)` (of the client’s choice). `dpopJWT` is signed using the corresponding private key `k`. The AS then binds the access token to `pub(k)`.
+When requesting resources, the client has to include another DPoP proof — signed with `k` — which must contain a hash of the access token in addition to the aforementioned items.
+With mTLS, the AS binds the access token to the public key included in the client’s TLS certificate which the client presents during connection establishment. When using the access token, the client presents the same certificate during the TLS connection establishment
+(which includes a proof of possession of the corresponding `private key`). We emphasize again that client authentication and access token sender constraining mechanisms are chosen independently of each other, and that sender constraining is not meant to identify the client towards the RS. For example, a client that uses `mTLS` to authenticate may use `DPoP` for sender constraining, and a client can authenticate with `private_key_jwt` and at the same time
+use `mTLS` for sender constraining. That is, there are four possible combinations.
+
+## FAPI 2.0 Message Signing
+- Signed Authorization Requests For signed authorization requests, the `OAuth 2.0 JWT Secured Authorization Request (JAR)` is employed. In the context of FAPI 2.0 SP, the relevant
+message to be signed (by the client) is the pushed authorization request
+- Signed Authorization Responses Signed authorization responses are implemented using the JWT Secured Authorization Response Mode for OAuth 2.0 (JARM)
+- `Signed Introspection Responses`: To sign the introspection response the JWT Response for OAuth Token Introspection specification is applied.
+- `Signed HTTP Messages`: To sign resource requests and responses, HTTP Message Signatures  are used. This profile allows signing both, request and response, or only one of them.
+
+## FAPI-CIBA
+The FAPI-CIBA profile of the CIBA authentication flow covers use cases of FAPI 2.0 in which the user aims to authorize a consumption device (CD) of a client but uses a different device — the authentication device, often a smartphone — to authenticate and provide consent, for example when authorizing a payment at a point-of-sale terminal.
+
+The access token represents the grant or the proof of authorization.." Authorization grant is the credential used by the client to obtain an access token. The client application presents this credential to the authorization server to exchange it for an access token"
+An authorization grant is a credential representing the resource owner's authorization (to access its protected resources) used by the client to obtain an access token.
+
+
+### Resource Owner Password Credentials
+The resource owner password credentials (i.e., username and password) can be used directly as an authorization grant to obtain an access token
+As a noun, a grant is the actual thing that has been given,yielded or bestowed. it represents a formal transfer of something of value- whether that is money,property or in the digital security world, permission
+
+
+### Client Credentials
+The client credentials (or other forms of client authentication) can be used as an authorization grant when the authorization scope is limited to the protected resources under the control of the client,or to protected resources previously arranged with the authorization server. Client credentials are used as an authorization grant typically when the client is acting on its own behalf (the client is also the resource owner) or is requesting access to protected resources based on an authorization previously arranged with the authorization server.
+
+###  Access Token
+Access tokens are credentials used to access protected resources. An access token is a string representing an authorization issued to the client.  The string is usually opaque to the client. Tokens represent specific scopes and durations of access, granted by the resource owner, and enforced by the resource server and authorization server authorization grant is the artifact (authorization code) that represents the user's consent
+
+Auth0's `JWT.decode()` is a foot-gun for a resource server: it parses without verifying, and the decode-then-forget-to-verify pattern is a recurring real-world CVE shape. Nimbus's `DefaultJWTProcessor` makes unverified access structurally awkward, which is what you want at a trust boundary.
+
+ RFC 9449 §8.2 expects the server to hand out the next nonce on successful responses.
+
+## Observability
+every service writes down the time duration for the task it performs, that is the span... how do you know spans belong to the same user request?, you tag each span with a tracid.. we use graphana with a traceid to pull all the spans
+
+we use graphana tempo to store spans
+
+## Metrics
+- Prometheus
+- Datadog
+- CloudWatch
+
+## Logs
+- Datadog
+- Splunk
+
+## Traces
+- jaeger
+- Graphana Tempo
+- Honeycomb
+- Datadog APM
+
+Grafana Mimir (metrics), Grafana Loki (logs), and Grafana Tempo (traces). These are the backend storage databases and Grafana itself is the dashboard UI that connects to those databases, queries them, and draws the charts
+
+You could use Prometheus for metrics, Elasticsearch for logs, and Jaeger for traces—and Grafana will happily connect to all three of them simultaneously and display them side-by-side on a single dashboard
+
+
+The clever production trick: Duende's nonce is stateless — an encrypted ("data-protected") server timestamp, not a cached random value. Validation is just decrypt + expiry check, so it needs no storage and scales horizontally. Your Play action can do the same with an AES-GCM-encrypted epoch-second.
+
+The challenge protocol on nonce failure (from ValidateNonce + Challenge) is what makes step-up work:
+- respond 401 with error code use_dpop_nonce (not invalid_token),
+- mint a fresh nonce and return it in the DPoP-Nonce response header,
+- `WWW-Authenticate: DPoP error="use_dpop_nonce", error_description="...".`
+
+So your `@RequireDPoPNonce` annotation needs no attributes at all — but its action must return the new nonce on failure, otherwise clients can never satisfy it.

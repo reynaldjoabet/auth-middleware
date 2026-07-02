@@ -35,12 +35,31 @@ class AuditSpec extends CatsEffectSuite {
     }
   }
 
+  test(
+    "AuditAuthEvents records a nonce challenge as challenged, not denied"
+  ) {
+    for {
+      pair <- Audit.inMemory[IO]
+      (sink, read) = pair
+      events = AuditAuthEvents[IO](sink, AuthEvents.noop[IO])
+      _ <- events.challengeIssued(
+        AuthError.UseDpopNonce(DpopNonce("nonce-abc123")),
+        "detail"
+      )
+      records <- read
+    } yield {
+      assertEquals(records.length, 1)
+      assertEquals(records(0).decision, "challenged:use_dpop_nonce")
+    }
+  }
+
   test("outcomeCode maps every AuthError variant to its stable code") {
     val cases: List[(AuthError, String)] = List(
       AuthError.MissingToken -> "missing_token",
       AuthError.InvalidRequest.TokenInQuery -> "invalid_request",
       AuthError.InvalidToken.Rejected -> "invalid_token",
       AuthError.InvalidDpopProof.Missing -> "invalid_dpop_proof",
+      AuthError.UseDpopNonce(DpopNonce("nonce-abc123")) -> "use_dpop_nonce",
       AuthError.InsufficientScope(
         Set("payments:write")
       ) -> "insufficient_scope",

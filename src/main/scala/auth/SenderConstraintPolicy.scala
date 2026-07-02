@@ -9,6 +9,16 @@ package auth
   * client certificate, is rejected regardless of policy. The policy only
   * controls whether plain bearer tokens (no `cnf` claim at all) are still
   * acceptable.
+  *
+  * DPoP vs mTLS is not a wash. The FAPI 2.0 formal analysis (DPoP Proof Replay)
+  * shows nonce-less DPoP is replayable: an attacker who reads a leaked resource
+  * request — or blocks the honest one so the RS never sees it — can present the
+  * proof over its own TLS connection, and per-node jti single-use detection
+  * cannot fire on a request the RS never received. The mitigation is
+  * RS-provided nonces ([[DpopNonceStore]]). mTLS sender-constraining has no
+  * such gap: the attacker cannot open an mTLS connection with the client's key,
+  * so a stolen certificate-bound token is unusable. Prefer mTLS, or DPoP *with*
+  * enforced nonces, for the highest-value resources.
   */
 
 enum SenderConstraintPolicy derives CanEqual {

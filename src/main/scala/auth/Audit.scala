@@ -15,6 +15,7 @@ private[auth] def outcomeCode(error: AuthError): String =
     case _: AuthError.InvalidRequest                 => "invalid_request"
     case _: AuthError.InvalidToken                   => "invalid_token"
     case _: AuthError.InvalidDpopProof               => "invalid_dpop_proof"
+    case _: AuthError.UseDpopNonce                   => "use_dpop_nonce"
     case _: AuthError.InsufficientScope              => "insufficient_scope"
     case _: AuthError.InsufficientUserAuthentication =>
       "insufficient_user_authentication"
@@ -90,5 +91,24 @@ object AuditAuthEvents {
             )
           )
         } *> underlying.authFailed(error, internalDetail)
+
+      // A challenge (e.g. use_dpop_nonce) is routine protocol flow, not a
+      // denial — record it under its own decision prefix so failure metrics
+      // and compliance reviews are not polluted with non-failures.
+      override def challengeIssued(
+          error: AuthError,
+          internalDetail: String
+      ): F[Unit] =
+        Sync[F].realTimeInstant.flatMap { now =>
+          audit.record(
+            AuditRecord(
+              at = now,
+              decision = s"challenged:${outcomeCode(error)}",
+              subject = None,
+              clientId = None,
+              tokenId = None
+            )
+          )
+        } *> underlying.challengeIssued(error, internalDetail)
     }
 }

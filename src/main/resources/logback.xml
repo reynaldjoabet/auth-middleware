@@ -1,0 +1,29 @@
+<configuration>
+
+  <!-- Stdout in containers: let the platform ship logs. Swap the encoder for
+       net.logstash.logback.encoder.LogstashEncoder once that dep is on the
+       classpath if you want structured JSON. trace_id / span_id are pulled
+       from the MDC, populated by the otel4s logging appender / middleware. -->
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] %logger{36} traceId=%X{trace_id:-} spanId=%X{span_id:-} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- Async so logging never stalls the CE compute pool under burst.
+       neverBlock=true drops onto the floor before it blocks a fiber;
+       discardingThreshold=0 means WARN/ERROR are never dropped. -->
+  <appender name="ASYNC" class="ch.qos.logback.classic.AsyncAppender">
+    <queueSize>8192</queueSize>
+    <discardingThreshold>0</discardingThreshold>
+    <neverBlock>true</neverBlock>
+    <appender-ref ref="STDOUT"/>
+  </appender>
+
+  <root level="INFO">
+    <appender-ref ref="ASYNC"/>
+  </root>
+
+  <logger name="org.http4s" level="WARN"/>
+
+</configuration>

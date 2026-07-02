@@ -30,6 +30,22 @@ enum AuthError derives CanEqual {
     */
   case InvalidDpopProof(reason: String)
 
+  /** The resource server requires a DPoP proof carrying a server-provided nonce
+    * (RFC 9449 §8-9), and the proof either omitted it or presented one that is
+    * unknown, expired or already used. Answered with `401`,
+    * `error="use_dpop_nonce"` and a fresh `DPoP-Nonce` response header the
+    * client must echo in the `nonce` claim of its next proof.
+    *
+    * This is the fix mandated by the FAPI 2.0 formal analysis for the DPoP
+    * Proof Replay attack: without it, a network attacker who reads a leaked
+    * resource request (or blocks the honest one) can replay the proof, since
+    * per-node single-use detection never sees the original request. Unlike the
+    * other `InvalidDpopProof*` reasons this is not really a client error — it
+    * is a challenge — so it carries the nonce to hand back rather than a fixed
+    * `reason` string.
+    */
+  case UseDpopNonce(nonce: DpopNonce)
+
   /** The token is valid but does not carry the scopes the route requires. RFC
     * 6750 `insufficient_scope`.
     */

@@ -182,6 +182,12 @@ object ResourceIndicator extends RefinedType[String, HttpsUriNoFragment]
 type Htu = Htu.T // distinct from resource indicator
 object Htu extends RefinedType[String, HtuUri]
 
+// RFC 9449 §8-9 DPoP-Nonce: an opaque, resource-server-minted value the client
+// must echo in its proof's `nonce` claim. Base64url, bounded for DoS safety.
+type DpopNonce = DpopNonce.T
+object DpopNonce
+    extends RefinedType[String, Base64UrlNoPadding & MaxLength[256]]
+
 type EmailAddress = EmailAddress.T
 object EmailAddress extends RefinedType[String, EmailAddressC]
 

@@ -8,6 +8,7 @@ import java.util.Base64
 import scala.concurrent.duration.*
 
 import cats.effect.Async
+import cats.effect.syntax.temporal.*
 import cats.syntax.all.*
 import com.github.benmanes.caffeine.cache.Caffeine
 import io.circe.Json
@@ -63,6 +64,10 @@ object TokenIntrospection {
     * @param cacheTtl
     *   how long a definitive answer (active / inactive) is reused for the same
     *   token. Bounds worst-case revocation latency; zero disables caching.
+    * @param requestTimeout
+    *   hard deadline for one introspection round trip. A stalled AS must not
+    *   pin request threads: on expiry the check is [[Result.Unavailable]] and
+    *   the caller fails closed.
     * @param cacheMaxEntries
     *   cap on cached answers (keys are SHA-256 hashes, ~100 bytes/entry)
     */
@@ -71,6 +76,7 @@ object TokenIntrospection {
       clientId: String,
       clientSecret: String,
       cacheTtl: FiniteDuration = 10.seconds,
+      requestTimeout: FiniteDuration = 2.seconds,
       cacheMaxEntries: Long = 100_000L
   ) {
     require(
@@ -80,6 +86,7 @@ object TokenIntrospection {
     require(clientId.nonEmpty, "clientId must not be empty")
     require(clientSecret.nonEmpty, "clientSecret must not be empty")
     require(cacheTtl >= Duration.Zero, "cacheTtl must not be negative")
+    require(requestTimeout > Duration.Zero, "requestTimeout must be positive")
   }
 
   /** Production implementation over an http4s [[Client]] (reuse the app's
@@ -119,7 +126,10 @@ object TokenIntrospection {
 
         private def introspect(rawToken: String): F[Result] = {
           val request = Request[F](Method.POST, config.endpoint)
-            .withEntity(UrlForm("token" -> rawToken))
+            // token_type_hint (RFC 7662 §2.1) spares the AS a lookup fan-out
+            .withEntity(
+              UrlForm("token" -> rawToken, "token_type_hint" -> "access_token")
+            )
             .putHeaders(
               Authorization(
                 BasicCredentials(config.clientId, config.clientSecret)
@@ -136,6 +146,7 @@ object TokenIntrospection {
                   .map(active => if (active) Result.Active else Result.Inactive)
               else Result.Unavailable.pure[F].widen
             }
+            .timeout(config.requestTimeout)
             .handleError(_ => Result.Unavailable)
         }
       }

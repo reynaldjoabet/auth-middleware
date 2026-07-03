@@ -10,13 +10,25 @@ import javax.crypto.{Cipher, KeyGenerator, SecretKey}
 
 import scala.concurrent.duration.*
 
+import cats.Applicative
 import cats.effect.Sync
 import cats.syntax.all.*
-import com.github.benmanes.caffeine.cache.Caffeine
-import com.nimbusds.openid.connect.sdk.Nonce
+
+/** Outcome of checking the `nonce` claim of a DPoP proof — mirrors Duende's
+  * `NonceValidationResult`. [[Missing]] and [[Invalid]] both end in a
+  * `use_dpop_nonce` challenge carrying a fresh `DPoP-Nonce`; they are separate
+  * so operators can tell a client that has not started the handshake from one
+  * presenting stale or forged values.
+  */
+enum NonceValidationResult derives CanEqual {
+  case Valid
+  case Missing // proof carries no nonce claim
+  case Invalid // unknown, expired, already used, or minted under a foreign key
+}
 
 /** Issues and validates resource-server-provided DPoP nonces (RFC 9449 §8-9) —
-  * the counterpart of Duende's `IDPoPNonceValidator`.
+  * the counterpart of Duende's `IDPoPNonceValidator` (`CreateNonce` /
+  * `ValidateNonce`).
   *
   * When a [[DpopVerifier]] is given one of these, it refuses a proof that does
   * not carry a fresh, server-minted `nonce` claim: the client is told to retry
@@ -26,89 +38,67 @@ import com.nimbusds.openid.connect.sdk.Nonce
   * jti single-use detection never sees the honest request. See
   * [[SenderConstraintPolicy]] for why mTLS binding is not vulnerable here.
   *
-  * Two adapters with different strength/operability trades:
-  *   - [[DpopNonceValidator.inMemory]] — strictly single-use, per node
+  * Two families of implementation with different strength/operability trades:
   *   - [[DpopNonceValidator.stateless]] — encrypted-timestamp freshness proof,
-  *     multi-node with a shared key and no store (Duende's design)
+  *     multi-node with a shared key and no store (Duende's
+  *     `DefaultDPoPNonceValidator` design)
+  *   - [[DpopNonceValidator.fromStore]] over a [[DpopNonceStore]] — strictly
+  *     single-use nonces backed by real state (in-memory per node, or Redis for
+  *     cross-node single-use)
   */
 trait DpopNonceValidator[F[_]] {
 
-  /** Mint a fresh nonce to hand to the client in a `DPoP-Nonce` header. */
-  def issue: F[DpopNonce]
-
-  /** Check a client-presented nonce. [[DpopNonceValidator.Status.Valid]] iff
-    * this server (or a peer sharing its key/store) issued it and it is still
-    * acceptable under the adapter's semantics.
+  /** Mint a fresh nonce to hand to the client in a `DPoP-Nonce` header.
+    * (Duende: `CreateNonce`.)
     */
-  def validate(presented: String): F[DpopNonceValidator.Status]
+  def createNonce: F[DpopNonce]
+
+  /** Check the `nonce` claim a proof presented, if any. (Duende:
+    * `ValidateNonce`.)
+    */
+  def validateNonce(presented: Option[String]): F[NonceValidationResult]
 }
 
 object DpopNonceValidator {
 
-  enum Status derives CanEqual {
-    case Valid
-    case Unacceptable // unknown, expired or already used → re-challenge
-  }
+  /** Adapt a [[DpopNonceStore]] (in-memory, Redis, …) into a validator with
+    * strictly single-use semantics: [[NonceValidationResult.Valid]] consumes
+    * the nonce, so a second presentation is [[NonceValidationResult.Invalid]].
+    */
+  def fromStore[F[_]: Applicative](
+      store: DpopNonceStore[F]
+  ): DpopNonceValidator[F] =
+    new DpopNonceValidator[F] {
+      def createNonce: F[DpopNonce] = store.mint
 
-  /** In-memory, single-node adapter backed by Caffeine (TTL eviction, no
-    * background thread). Nonces are Nimbus [[Nonce]] values (256 bits of
-    * `SecureRandom`, base64url) and are removed on first use — the strongest
-    * (strictly single-use) semantics, but per node: behind a load balancer a
-    * client's retry must land on the node that minted its nonce. For multi-node
-    * deployments prefer [[stateless]], which needs no shared store at all
-    * (Duende's design), or supply a shared-store implementation if you need
-    * single-use semantics across nodes.
-    *
-    * @param ttl
-    *   how long an issued nonce stays acceptable. Must comfortably exceed a
-    *   client's request round trip: the nonce handed out on one response is
-    *   spent on the next request.
-    * @param maxEntries
-    *   cap on outstanding nonces. Every issued nonce occupies an entry until
-    *   used or expired, and a caller holding a valid token can mint one per
-    *   request — so this bounds worst-case memory (~150 bytes/entry; the
-    *   default caps around 15 MB). Size it near `expected request rate × ttl`,
-    *   not higher.
+      def validateNonce(presented: Option[String]): F[NonceValidationResult] =
+        presented match {
+          case None        => NonceValidationResult.Missing.pure[F]
+          case Some(value) =>
+            store.consume(value).map {
+              case true  => NonceValidationResult.Valid
+              case false => NonceValidationResult.Invalid
+            }
+        }
+    }
+
+  /** Single-node, single-use validator over [[DpopNonceStore.inMemory]] — see
+    * that adapter for the semantics and sizing guidance.
     */
   def inMemory[F[_]: Sync](
       ttl: FiniteDuration = 5.minutes,
       maxEntries: Long = 100_000L
   ): F[DpopNonceValidator[F]] =
-    Sync[F].delay {
-      val cache =
-        Caffeine
-          .newBuilder()
-          .expireAfterWrite(java.time.Duration.ofMillis(ttl.toMillis))
-          .maximumSize(maxEntries)
-          .build[String, java.lang.Boolean]()
+    DpopNonceStore.inMemory[F](ttl, maxEntries).map(fromStore[F])
 
-      new DpopNonceValidator[F] {
-        def issue: F[DpopNonce] =
-          Sync[F].delay {
-            // Nimbus Nonce() = 32 bytes of SecureRandom, base64url (43 chars)
-            // — same value shape the verifier consumes; refinement holds.
-            val value = new Nonce().getValue
-            cache.put(value, java.lang.Boolean.TRUE)
-            DpopNonce.applyUnsafe(value)
-          }
-
-        def validate(presented: String): F[Status] =
-          Sync[F].delay {
-            // remove == atomic check-and-consume: single use.
-            if (cache.asMap().remove(presented) != null) Status.Valid
-            else Status.Unacceptable
-          }
-      }
-    }
-
-  /** Stateless, multi-node adapter — the pattern of Duende IdentityServer's
+  /** Stateless, multi-node validator — the pattern of Duende IdentityServer's
     * `DefaultDPoPNonceValidator`: the nonce *is* an AES-GCM-encrypted server
     * timestamp, so validation is decrypt + freshness check. No nonce store, no
     * Redis: any node holding the same key can validate a nonce any other node
     * issued, and restarts lose nothing.
     *
-    * Trade-off vs [[inMemory]] (which is single-use): a stateless nonce is a
-    * freshness proof, not a one-time value — it stays acceptable until
+    * Trade-off vs a [[fromStore]] validator (single-use): a stateless nonce is
+    * a freshness proof, not a one-time value — it stays acceptable until
     * `lifetime` elapses. Replay of a whole *proof* is still caught by the
     * verifier's jti single-use checker (per node), so what the nonce bounds is
     * the cross-node replay window: an attacker who captured a proof and plays
@@ -149,7 +139,7 @@ object DpopNonceValidator {
       val acceptedKeys = key :: previousKeys
 
       new DpopNonceValidator[F] {
-        def issue: F[DpopNonce] =
+        def createNonce: F[DpopNonce] =
           Sync[F].realTime.flatMap { now =>
             Sync[F].delay {
               val iv = new Array[Byte](StatelessIvBytes)
@@ -160,6 +150,7 @@ object DpopNonceValidator {
                 key,
                 new GCMParameterSpec(StatelessTagBits, iv)
               )
+              cipher.updateAAD(StatelessPurpose)
               val ciphertext = cipher.doFinal(
                 now.toSeconds.toString.getBytes(StandardCharsets.US_ASCII)
               )
@@ -174,35 +165,41 @@ object DpopNonceValidator {
             }
           }
 
-        def validate(presented: String): F[Status] =
-          Sync[F].realTime.flatMap { now =>
-            Sync[F].delay {
-              if (presented.isEmpty || presented.length > 512)
-                Status.Unacceptable
-              else {
-                // AEAD authentication makes a forged/foreign-key nonce fail
-                // the tag check; anything unparsable is simply re-challenged.
-                val decoded =
-                  try Some(Base64.getUrlDecoder.decode(presented))
-                  catch { case _: IllegalArgumentException => None }
-                decoded.filter(_.length > StatelessIvBytes) match {
-                  case None     => Status.Unacceptable
-                  case Some(in) =>
-                    val issuedAt = acceptedKeys.iterator
-                      .map(decryptTimestamp(_, in))
-                      .collectFirst { case Some(t) => t }
-                    issuedAt match {
-                      case None    => Status.Unacceptable
-                      case Some(t) =>
-                        val nowSeconds = now.toSeconds
-                        val fresh =
-                          nowSeconds - t <= lifetime.toSeconds &&
-                            t - nowSeconds <= forwardSkew.toSeconds
-                        if (fresh) Status.Valid else Status.Unacceptable
+        def validateNonce(
+            presented: Option[String]
+        ): F[NonceValidationResult] =
+          presented match {
+            case None        => NonceValidationResult.Missing.pure[F]
+            case Some(value) =>
+              Sync[F].realTime.flatMap { now =>
+                Sync[F].delay {
+                  if (value.isEmpty || value.length > 512)
+                    NonceValidationResult.Invalid
+                  else {
+                    // AEAD authentication makes a forged/foreign-key nonce fail
+                    // the tag check; anything unparsable is re-challenged.
+                    val decoded =
+                      try Some(Base64.getUrlDecoder.decode(value))
+                      catch { case _: IllegalArgumentException => None }
+                    decoded.filter(_.length > StatelessIvBytes) match {
+                      case None     => NonceValidationResult.Invalid
+                      case Some(in) =>
+                        acceptedKeys.iterator
+                          .map(decryptTimestamp(_, in))
+                          .collectFirst { case Some(t) => t } match {
+                          case None    => NonceValidationResult.Invalid
+                          case Some(t) =>
+                            val nowSeconds = now.toSeconds
+                            val fresh =
+                              nowSeconds - t <= lifetime.toSeconds &&
+                                t - nowSeconds <= forwardSkew.toSeconds
+                            if (fresh) NonceValidationResult.Valid
+                            else NonceValidationResult.Invalid
+                        }
                     }
+                  }
                 }
               }
-            }
           }
       }
     }
@@ -215,6 +212,7 @@ object DpopNonceValidator {
         key,
         new GCMParameterSpec(StatelessTagBits, in, 0, StatelessIvBytes)
       )
+      cipher.updateAAD(StatelessPurpose)
       val plaintext =
         cipher.doFinal(in, StatelessIvBytes, in.length - StatelessIvBytes)
       new String(plaintext, StandardCharsets.US_ASCII).toLongOption
@@ -243,4 +241,12 @@ object DpopNonceValidator {
   private val StatelessCipher = "AES/GCM/NoPadding"
   private val StatelessTagBits = 128
   private val StatelessIvBytes = 12
+
+  /** GCM additional authenticated data binding every nonce ciphertext to this
+    * purpose — the analogue of Duende's DataProtector purpose string
+    * (`"DPoPProofValidator-nonce"`). Even if the AES key is ever shared with
+    * another use, ciphertext minted elsewhere can never verify as a nonce.
+    */
+  private val StatelessPurpose =
+    "auth.dpop.nonce".getBytes(StandardCharsets.US_ASCII)
 }

@@ -56,6 +56,7 @@ lazy val root = (project in file("."))
       "io.opentelemetry" % "opentelemetry-sdk-extension-autoconfigure" % "1.63.0" % Runtime,
       Dependencies.sageClientCe,
       Dependencies.sageClientZio,
+      guice,
       "jakarta.inject" % "jakarta.inject-api" % "2.0.1"
     )
   )

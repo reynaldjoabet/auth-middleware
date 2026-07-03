@@ -243,22 +243,39 @@ object DpopVerifier {
                       nonces match {
                         case None =>
                           runNimbus(req, accessToken, expectedJkt, proof, null)
-                        case Some(store) =>
-                          nonceClaimOf(proof) match {
-                            case None            => challenge(store)
-                            case Some(presented) =>
-                              store.validate(presented).flatMap {
-                                case DpopNonceValidator.Status.Valid =>
-                                  runNimbus(
-                                    req,
-                                    accessToken,
-                                    expectedJkt,
-                                    proof,
-                                    new Nonce(presented)
-                                  )
-                                case DpopNonceValidator.Status.Unacceptable =>
-                                  challenge(store)
-                              }
+                        case Some(validator) =>
+                          val presented = nonceClaimOf(proof)
+                          validator.validateNonce(presented).flatMap { result =>
+                            (presented, result) match {
+                              case (
+                                    Some(value),
+                                    NonceValidationResult.Valid
+                                  ) =>
+                                runNimbus(
+                                  req,
+                                  accessToken,
+                                  expectedJkt,
+                                  proof,
+                                  new Nonce(value)
+                                )
+                              case (None, NonceValidationResult.Valid) =>
+                                // defensive: no implementation may accept an
+                                // absent nonce as Valid
+                                challenge(
+                                  validator,
+                                  "validator accepted an absent nonce; re-challenging"
+                                )
+                              case (_, NonceValidationResult.Missing) =>
+                                challenge(
+                                  validator,
+                                  "proof carries no nonce; issued challenge"
+                                )
+                              case (_, NonceValidationResult.Invalid) =>
+                                challenge(
+                                  validator,
+                                  "nonce unknown, expired or already used; issued challenge"
+                                )
+                            }
                           }
                       }
                   }
@@ -333,13 +350,12 @@ object DpopVerifier {
             * challenge is routine protocol flow, not a denial.
             */
           private def challenge(
-              store: DpopNonceValidator[F]
+              validator: DpopNonceValidator[F],
+              detail: String
           ): F[Either[AuthError, Unit]] =
-            store.issue.flatMap { nonce =>
+            validator.createNonce.flatMap { nonce =>
               val err = AuthError.UseDpopNonce(nonce)
-              events
-                .challengeIssued(err, "DPoP nonce required; issued challenge")
-                .as(err.asLeft)
+              events.challengeIssued(err, detail).as(err.asLeft)
             }
 
           private def fail(

@@ -1,42 +1,202 @@
 package auth
+import auth.dpop.{DpopNonceValidator, NonceValidationResult}
 
+import java.nio.charset.StandardCharsets
+import java.util.Base64
+
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.SecretKey
+
+import cats.effect.IO
+import cats.effect.kernel.Resource
 import org.http4s.Status
 
-/** RFC 9449 §8-9 server-provided DPoP nonces — the FAPI 2.0 fix for DPoP Proof
-  * Replay. Exercises the challenge/retry handshake, single-use consumption,
-  * rejection of unknown nonces, and §8.2 rotation (a fresh `DPoP-Nonce` on
-  * every response to a DPoP request).
+/** The [[dpop.DpopNonceValidator]] API across its two implementation families.
+  * For [[dpop.DpopNonceValidator.stateless]] (Duende's
+  * `DefaultDPoPNonceValidator`: an AES-GCM-encrypted server timestamp,
+  * validated by decrypt + freshness check): the multi-node property (any holder
+  * of the key validates any node's nonce), key rotation, rejection of
+  * foreign/tampered/expired values, and the middleware handshake. For
+  * [[dpop.DpopNonceValidator.fromStore]]: the single-use adaptation of a
+  * [[dpop.DpopNonceStore]]. The store-backed middleware handshake lives in
+  * [[DpopNonceStoreSpec]].
   */
 class DpopNonceValidatorSpec extends DpopBaseSuite {
+  import NonceValidationResult as NonceStatus
   import TestTokens.*
 
+  private def newStore: IO[DpopNonceValidator[IO]] =
+    DpopNonceValidator
+      .randomKey[IO]
+      .flatMap(DpopNonceValidator.stateless[IO](_))
+
   test(
-    "a proof with no nonce is challenged with use_dpop_nonce + a DPoP-Nonce"
+    "fromStore semantics: absent → Missing, unknown → Invalid, minted → Valid exactly once"
   ) {
-    val token = sign(dpopBoundClaims())
-    appWithNonces.use { a =>
-      a.run(
-        dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
-      ).map { resp =>
-        assertEquals(resp.status, Status.Unauthorized)
-        assert(
-          challengeOf(resp).contains("""error="use_dpop_nonce""""),
-          challengeOf(resp)
-        )
-        assert(nonceOf(resp).nonEmpty, "no DPoP-Nonce header issued")
-      }
+    for {
+      validator <- DpopNonceValidator.inMemory[IO]()
+      missing <- validator.validateNonce(None)
+      unknown <- validator.validateNonce(Some("nope"))
+      nonce <- validator.createNonce
+      first <- validator.validateNonce(Some(nonce.value: String))
+      second <- validator.validateNonce(Some(nonce.value: String))
+    } yield {
+      assertEquals(missing, NonceValidationResult.Missing)
+      assertEquals(unknown, NonceValidationResult.Invalid)
+      assertEquals(first, NonceValidationResult.Valid)
+      assertEquals(second, NonceValidationResult.Invalid)
     }
   }
 
-  test("retrying with the issued nonce succeeds") {
+  test("an absent nonce claim is Missing") {
+    for {
+      validator <- newStore
+      result <- validator.validateNonce(None)
+    } yield assertEquals(result, NonceStatus.Missing)
+  }
+
+  test("createNonce → validateNonce round-trips") {
+    for {
+      store <- newStore
+      nonce <- store.createNonce
+      status <- store.validateNonce(Some(nonce.value: String))
+    } yield assertEquals(status, NonceStatus.Valid)
+  }
+
+  test(
+    "multi-node: a nonce minted by one store validates on another sharing the key"
+  ) {
+    for {
+      key <- DpopNonceValidator.randomKey[IO]
+      nodeA <- DpopNonceValidator.stateless[IO](key)
+      nodeB <- DpopNonceValidator.stateless[IO](key)
+      nonce <- nodeA.createNonce
+      status <- nodeB.validateNonce(Some(nonce.value: String))
+    } yield assertEquals(status, NonceStatus.Valid)
+  }
+
+  test("a nonce from a different key is unacceptable") {
+    for {
+      ours <- newStore
+      theirs <- newStore
+      foreign <- theirs.createNonce
+      status <- ours.validateNonce(Some(foreign.value: String))
+    } yield assertEquals(status, NonceStatus.Invalid)
+  }
+
+  test(
+    "key rotation: a nonce minted under the retired key stays valid while it is in previousKeys"
+  ) {
+    for {
+      oldKey <- DpopNonceValidator.randomKey[IO]
+      newKey <- DpopNonceValidator.randomKey[IO]
+      before <- DpopNonceValidator.stateless[IO](oldKey)
+      nonce <- before.createNonce
+      rotated <- DpopNonceValidator
+        .stateless[IO](newKey, previousKeys = List(oldKey))
+      dropped <- DpopNonceValidator.stateless[IO](newKey)
+      graced <- rotated.validateNonce(Some(nonce.value: String))
+      rejected <- dropped.validateNonce(Some(nonce.value: String))
+    } yield {
+      assertEquals(graced, NonceStatus.Valid)
+      assertEquals(rejected, NonceStatus.Invalid)
+    }
+  }
+
+  test("a tampered nonce fails the AEAD tag check") {
+    for {
+      store <- newStore
+      nonce <- store.createNonce
+      raw = nonce.value: String
+      flipped = raw.dropRight(1) + (if (raw.last == 'A') 'B' else 'A')
+      status <- store.validateNonce(Some(flipped))
+    } yield assertEquals(status, NonceStatus.Invalid)
+  }
+
+  test(
+    "purpose binding: same-key ciphertext without the nonce AAD is Invalid (Duende DataProtector purpose)"
+  ) {
+    for {
+      key <- DpopNonceValidator.randomKey[IO]
+      validator <- DpopNonceValidator.stateless[IO](key)
+      now <- IO.realTime.map(_.toSeconds)
+      foreignPurpose <- IO(encryptTimestamp(key, now, aad = None))
+      status <- validator.validateNonce(Some(foreignPurpose))
+    } yield assertEquals(status, NonceStatus.Invalid)
+  }
+
+  test("garbage and empty values are unacceptable") {
+    for {
+      store <- newStore
+      a <- store.validateNonce(Some("not-a-nonce"))
+      b <- store.validateNonce(Some(""))
+      c <- store.validateNonce(Some("x" * 1024))
+    } yield {
+      assertEquals(a, NonceStatus.Invalid)
+      assertEquals(b, NonceStatus.Invalid)
+      assertEquals(c, NonceStatus.Invalid)
+    }
+  }
+
+  test("a nonce older than its lifetime is unacceptable") {
+    for {
+      key <- DpopNonceValidator.randomKey[IO]
+      store <- DpopNonceValidator.stateless[IO](key)
+      now <- IO.realTime.map(_.toSeconds)
+      stale <- IO(encryptTimestamp(key, now - 3600))
+      status <- store.validateNonce(Some(stale))
+    } yield assertEquals(status, NonceStatus.Invalid)
+  }
+
+  test("a nonce from the future beyond the forward skew is unacceptable") {
+    for {
+      key <- DpopNonceValidator.randomKey[IO]
+      store <- DpopNonceValidator.stateless[IO](key)
+      now <- IO.realTime.map(_.toSeconds)
+      future <- IO(encryptTimestamp(key, now + 3600))
+      status <- store.validateNonce(Some(future))
+    } yield assertEquals(status, NonceStatus.Invalid)
+  }
+
+  test(
+    "trade-off vs inMemory: a stateless nonce is reusable within its lifetime (freshness proof, not single-use)"
+  ) {
+    for {
+      store <- newStore
+      nonce <- store.createNonce
+      first <- store.validateNonce(Some(nonce.value: String))
+      second <- store.validateNonce(Some(nonce.value: String))
+    } yield {
+      assertEquals(first, NonceStatus.Valid)
+      assertEquals(second, NonceStatus.Valid)
+    }
+  }
+
+  // ── through the middleware ────────────────────────────────────────────────
+
+  private def statelessApp(
+      shared: Option[SecretKey] = None
+  ): Resource[IO, org.http4s.HttpApp[IO]] =
+    Resource
+      .eval(shared.fold(DpopNonceValidator.randomKey[IO])(IO.pure))
+      .flatMap(key => Resource.eval(DpopNonceValidator.stateless[IO](key)))
+      .flatMap(store => app(nonces = Some(store)))
+
+  test("middleware: proof without a nonce is challenged, retry succeeds") {
     val token = sign(dpopBoundClaims())
-    appWithNonces.use { a =>
+    statelessApp().use { a =>
       for {
         first <- a.run(
           dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
         )
         _ = assertEquals(first.status, Status.Unauthorized)
+        _ = assert(
+          challengeOf(first).contains("""error="use_dpop_nonce""""),
+          challengeOf(first)
+        )
         nonce = nonceOf(first)
+        _ = assert(nonce.nonEmpty, "no DPoP-Nonce header issued")
         second <- a.run(
           dpopRequest(
             token,
@@ -52,153 +212,54 @@ class DpopNonceValidatorSpec extends DpopBaseSuite {
     }
   }
 
-  test("a nonce is single-use — replay is re-challenged") {
+  test(
+    "middleware, multi-node: a nonce issued by one node is accepted by another (no shared store)"
+  ) {
     val token = sign(dpopBoundClaims())
-    appWithNonces.use { a =>
-      for {
-        first <- a.run(
-          dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
-        )
-        nonce = nonceOf(first)
-        // Distinct jti each time, so only the consumed nonce differs.
-        ok <- a.run(
+    val nodes = for {
+      key <- Resource.eval(DpopNonceValidator.randomKey[IO])
+      issuerNode <- Resource.eval(DpopNonceValidator.stateless[IO](key))
+      validatorNode <- statelessApp(shared = Some(key))
+    } yield (issuerNode, validatorNode)
+
+    nodes.use { case (issuer, a) =>
+      issuer.createNonce.flatMap { nonce =>
+        a.run(
           dpopRequest(
             token,
             dpopProof(
               "GET",
               accountsUri.renderString,
               token,
-              nonce = Some(nonce)
+              nonce = Some(nonce.value: String)
             )
           )
-        )
-        _ = assertEquals(ok.status, Status.Ok)
-        again <- a.run(
-          dpopRequest(
-            token,
-            dpopProof(
-              "GET",
-              accountsUri.renderString,
-              token,
-              nonce = Some(nonce)
-            )
-          )
-        )
-        _ = assertEquals(again.status, Status.Unauthorized)
-      } yield assert(
-        challengeOf(again).contains("""error="use_dpop_nonce""""),
-        challengeOf(again)
-      )
-    }
-  }
-
-  test("an unknown nonce is re-challenged, not accepted") {
-    val token = sign(dpopBoundClaims())
-    appWithNonces.use { a =>
-      a.run(
-        dpopRequest(
-          token,
-          dpopProof(
-            "GET",
-            accountsUri.renderString,
-            token,
-            nonce = Some("anunknownnoncevalue")
-          )
-        )
-      ).map { resp =>
-        assertEquals(resp.status, Status.Unauthorized)
-        assert(
-          challengeOf(resp).contains("""error="use_dpop_nonce""""),
-          challengeOf(resp)
-        )
+        ).map(resp => assertEquals(resp.status, Status.Ok))
       }
     }
   }
 
-  test(
-    "rotation (RFC 9449 §8.2): a successful response carries a fresh DPoP-Nonce, keeping steady state at one round trip"
-  ) {
-    val token = sign(dpopBoundClaims())
-    appWithNonces.use { a =>
-      for {
-        first <- a.run(
-          dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
-        )
-        n1 = nonceOf(first)
-        ok1 <- a.run(
-          dpopRequest(
-            token,
-            dpopProof("GET", accountsUri.renderString, token, nonce = Some(n1))
-          )
-        )
-        _ = assertEquals(ok1.status, Status.Ok)
-        n2 = nonceOf(ok1)
-        _ = assert(n2.nonEmpty, "success response carried no DPoP-Nonce")
-        _ = assertNotEquals(n2, n1, "rotation must mint a fresh nonce")
-        // Steady state: the rotated nonce works directly — no 401 round trip.
-        ok2 <- a.run(
-          dpopRequest(
-            token,
-            dpopProof("GET", accountsUri.renderString, token, nonce = Some(n2))
-          )
-        )
-      } yield assertEquals(ok2.status, Status.Ok)
-    }
-  }
-
-  test(
-    "recovery: a proof rejected after consuming its nonce still receives a fresh DPoP-Nonce, so one retry suffices"
-  ) {
-    val token = sign(dpopBoundClaims())
-    appWithNonces.use { a =>
-      for {
-        first <- a.run(
-          dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
-        )
-        n1 = nonceOf(first)
-        // Valid nonce but wrong htu: the nonce is consumed, then Nimbus rejects.
-        bad <- a.run(
-          dpopRequest(
-            token,
-            dpopProof(
-              "GET",
-              "https://evil.example/accounts",
-              token,
-              nonce = Some(n1)
-            )
-          )
-        )
-        _ = assertEquals(bad.status, Status.Unauthorized)
-        _ = assert(
-          challengeOf(bad).contains("""error="invalid_dpop_proof""""),
-          challengeOf(bad)
-        )
-        n2 = nonceOf(bad)
-        _ = assert(
-          n2.nonEmpty,
-          "failure response must carry a fresh DPoP-Nonce for recovery"
-        )
-        recovered <- a.run(
-          dpopRequest(
-            token,
-            dpopProof("GET", accountsUri.renderString, token, nonce = Some(n2))
-          )
-        )
-      } yield assertEquals(recovered.status, Status.Ok)
-    }
-  }
-
-  test("no DPoP-Nonce is minted for non-DPoP (Bearer) traffic") {
-    val token = sign(claims())
-    appWithNonces.use { a =>
-      a.run(bearerRequest(token)).map { resp =>
-        assertEquals(resp.status, Status.Ok)
-        assertEquals(
-          nonceOf(resp),
-          "",
-          "Bearer response must not carry DPoP-Nonce"
-        )
-      }
-    }
+  /** Encrypt an arbitrary epoch-second exactly as the validator does (including
+    * the purpose AAD), to craft expired / future nonces without clock control.
+    * Pass `aad = None` to simulate ciphertext minted for a different purpose
+    * under the same key.
+    */
+  private def encryptTimestamp(
+      key: SecretKey,
+      epochSeconds: Long,
+      aad: Option[String] = Some("auth.dpop.nonce")
+  ): String = {
+    val iv = new Array[Byte](12)
+    new java.security.SecureRandom().nextBytes(iv)
+    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(128, iv))
+    aad.foreach(p => cipher.updateAAD(p.getBytes(StandardCharsets.US_ASCII)))
+    val ciphertext = cipher.doFinal(
+      epochSeconds.toString.getBytes(StandardCharsets.US_ASCII)
+    )
+    val out = new Array[Byte](iv.length + ciphertext.length)
+    System.arraycopy(iv, 0, out, 0, iv.length)
+    System.arraycopy(ciphertext, 0, out, iv.length, ciphertext.length)
+    Base64.getUrlEncoder.withoutPadding.encodeToString(out)
   }
 }

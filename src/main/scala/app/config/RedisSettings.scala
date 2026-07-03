@@ -17,8 +17,16 @@ import sage.client.{
 }
 
 /** Standalone (one server) or cluster (seed list, topology discovered). */
-enum RedisMode derives ConfigReader, CanEqual {
+enum RedisMode derives CanEqual {
   case Standalone, Cluster
+}
+
+object RedisMode {
+  // `derives ConfigReader` on an enum produces a coproduct reader that expects
+  // an OBJECT ({ standalone {} }); the config writes plain strings
+  // (`mode = standalone`), which needs the enumeration form.
+  given ConfigReader[RedisMode] =
+    _root_.pureconfig.generic.semiauto.deriveEnumerationReader
 }
 
 /** A single Redis/Valkey address; refined so a blank host or out-of-range port

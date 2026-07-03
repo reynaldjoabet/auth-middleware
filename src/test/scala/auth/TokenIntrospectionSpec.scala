@@ -92,6 +92,19 @@ class TokenIntrospectionSpec extends CatsEffectSuite {
     } yield assertEquals(result, Result.Unavailable)
   }
 
+  test(
+    "a stalled endpoint hits the request timeout and is Unavailable — no pinned request threads"
+  ) {
+    for {
+      calls <- Ref.of[IO, Int](0)
+      introspection <- TokenIntrospection.http4s[IO](
+        cfg.copy(requestTimeout = 100.millis),
+        stubClient(calls, _ => IO.never)
+      )
+      result <- introspection.check("t")
+    } yield assertEquals(result, Result.Unavailable)
+  }
+
   test("an unparsable body is Unavailable, not accepted") {
     for {
       calls <- Ref.of[IO, Int](0)

@@ -193,8 +193,8 @@ public class TokenAuthenticator {
         if (introspect) {
             Http.Request finalRequest = enriched;
             boolean dpopScheme = isDPoP;
-            return CompletableFuture
-                    .supplyAsync(() -> introspector.isActive(rawToken))
+            return introspector
+                    .isActiveAsync(rawToken)
                     .thenCompose(active -> {
                         if (!active) {
                             log.warn("Token introspection failed (revoked?): jti={}", claims.getJWTID());

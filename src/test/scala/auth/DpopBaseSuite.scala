@@ -17,9 +17,9 @@ import org.typelevel.ci.*
 
 /** Shared fixtures for the DPoP suites: a validator over the test JWKS, a
   * trivial protected route, and helpers to build DPoP requests and read
-  * challenge headers. [[DpopVerifierSpec]] and [[DpopNonceValidatorSpec]]
-  * extend this, mirroring the split between `DpopVerifier` and
-  * `DpopNonceValidator`.
+  * challenge headers. [[DpopVerifierSpec]], [[DpopNonceValidatorSpec]] and
+  * [[DpopNonceStoreSpec]] extend this, mirroring the split between
+  * `DpopVerifier`, `DpopNonceValidator` and `DpopNonceStore`.
   */
 abstract class DpopBaseSuite extends CatsEffectSuite {
   import TestTokens.*

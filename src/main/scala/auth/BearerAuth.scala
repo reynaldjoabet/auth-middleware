@@ -202,8 +202,8 @@ object BearerAuth {
     // the client the nonce it needs to recover immediately — a proof rejected
     // after its nonce was consumed would otherwise cost two more round trips.
     dpop.flatMap(_.nonces) match {
-      case None        => base
-      case Some(store) =>
+      case None            => base
+      case Some(validator) =>
         routes =>
           Kleisli { (req: Request[F]) =>
             base(routes)(req).semiflatMap { resp =>
@@ -213,7 +213,7 @@ object BearerAuth {
               )
                 resp.pure[F]
               else
-                store.issue.map(n =>
+                validator.createNonce.map(n =>
                   resp.putHeaders(Header.Raw(DpopNonceHeader, n.value: String))
                 )
             }

@@ -86,6 +86,19 @@ public class AuthModule extends AbstractModule {
         return rawKey -> CompletableFuture.completedFuture(Optional.empty());
     }
 
+    /**
+     * Fail-closed placeholder: every feature gate is off until the application
+     * binds a real checker. Only consulted by endpoints whose scope annotation
+     * sets {@code requiredFeature}. Overridden by any binding in a later module.
+     */
+    @Provides
+    @Singleton
+    FeatureChecker featureChecker() {
+        log.warn("No FeatureChecker bound — endpoints gated on requiredFeature "
+                + "will respond 403 until a real checker is provided.");
+        return (feature, principal) -> false;
+    }
+
     private static SecretKey decodeKey(String base64) {
         return DPoPNonceService.keyFromBytes(Base64.getDecoder().decode(base64));
     }

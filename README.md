@@ -777,3 +777,11 @@ The challenge protocol on nonce failure (from ValidateNonce + Challenge) is what
 - `WWW-Authenticate: DPoP error="use_dpop_nonce", error_description="...".`
 
 So your `@RequireDPoPNonce` annotation needs no attributes at all — but its action must return the new nonce on failure, otherwise clients can never satisfy it.
+
+
+```java
+@Authenticated
+@RequireBillingInvoicesRead
+@RequireAuditEventsRead        // both must pass; each runs its own action
+public CompletionStage<Result> auditedInvoices(Http.Request req) { ... }
+```

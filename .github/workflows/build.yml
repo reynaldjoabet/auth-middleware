@@ -22,7 +22,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java: [17, 21]
+        # sage-client-ce 0.2.0 is compiled for Java 21 (class file 65.0), so
+        # that is the project's minimum runtime. Java 17 cannot load sage.client.*.
+        java: [21]
         distribution: [temurin, corretto]
         os: [ubuntu-latest]
 

@@ -1,7 +1,7 @@
 package app.config
 
 import scala.concurrent.duration.FiniteDuration
-import pureconfig.ConfigReader
+import _root_.pureconfig.ConfigReader
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
 import io.github.iltotore.iron.pureconfig.given

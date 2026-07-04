@@ -3,7 +3,14 @@ package auth
 import auth.dpop.{DpopConfig, DpopVerifier}
 
 import cats.effect.IO
+import cats.effect.kernel.Resource
 import com.nimbusds.jose.JOSEObjectType
+import com.nimbusds.oauth2.sdk.dpop.verifiers.DPoPProofUse
+import com.nimbusds.oauth2.sdk.util.singleuse.{
+  AlreadyUsedException,
+  SingleUseChecker
+}
+import org.http4s.HttpApp
 import org.http4s.Method
 import org.http4s.Request
 import org.http4s.Response
@@ -226,6 +233,80 @@ class DpopVerifierSpec extends DpopBaseSuite {
           challengeOf(resp)
         )
       }
+    }
+  }
+
+  // -- Injected shared-store single-use checker (multi-node replay) -----------
+
+  /** A trivial shared `SingleUseChecker`, standing in for a Redis-backed store:
+    * two verifier instances (two "nodes") pointed at the same map see each
+    * other's consumed jtis.
+    */
+  private def sharedChecker(): SingleUseChecker[DPoPProofUse] = {
+    val seen =
+      new java.util.concurrent.ConcurrentHashMap[String, java.lang.Boolean]()
+    (use: DPoPProofUse) =>
+      val key = use.getIssuer.getValue + ":" + use.getJWTID.getValue
+      if (seen.putIfAbsent(key, java.lang.Boolean.TRUE) != null)
+        throw new AlreadyUsedException("jti already used")
+  }
+
+  /** A middleware "node" whose verifier uses the supplied single-use checker
+    * (or the default per-node in-memory one when `None`).
+    */
+  private def node(
+      checker: Option[SingleUseChecker[DPoPProofUse]]
+  ): Resource[IO, HttpApp[IO]] =
+    DpopVerifier
+      .default[IO](
+        DpopConfig(),
+        AuthEvents.noop[IO],
+        singleUseChecker = checker
+      )
+      .map { verifier =>
+        BearerAuth
+          .middleware(validator, AuthEvents.noop[IO], dpop = Some(verifier))
+          .apply(routes)
+          .orNotFound
+      }
+
+  test(
+    "a shared single-use checker catches a proof replayed onto another node"
+  ) {
+    val token = sign(dpopBoundClaims())
+    val proof = dpopProof("GET", accountsUri.renderString, token)
+    val shared = sharedChecker()
+    val cluster = for {
+      a <- node(Some(shared))
+      b <- node(Some(shared))
+    } yield (a, b)
+    cluster.use { case (nodeA, nodeB) =>
+      for {
+        first <- nodeA.run(dpopRequest(token, proof))
+        _ = assertEquals(first.status, Status.Ok)
+        // Same proof to a *different* node: rejected, checker is shared.
+        replay <- nodeB.run(dpopRequest(token, proof))
+        _ <- assertDpopRejected(replay)
+      } yield ()
+    }
+  }
+
+  test("the default per-node checker does NOT catch a cross-node replay") {
+    val token = sign(dpopBoundClaims())
+    val proof = dpopProof("GET", accountsUri.renderString, token)
+    val cluster = for {
+      a <- node(None)
+      b <- node(None)
+    } yield (a, b)
+    cluster.use { case (nodeA, nodeB) =>
+      for {
+        first <- nodeA.run(dpopRequest(token, proof))
+        _ = assertEquals(first.status, Status.Ok)
+        // Each node has its own in-memory checker, so node B never saw the jti —
+        // the gap the injected shared-store checker closes.
+        replay <- nodeB.run(dpopRequest(token, proof))
+        _ = assertEquals(replay.status, Status.Ok)
+      } yield ()
     }
   }
 }

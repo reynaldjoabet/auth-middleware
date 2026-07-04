@@ -785,3 +785,49 @@ So your `@RequireDPoPNonce` annotation needs no attributes at all — but its ac
 @RequireAuditEventsRead        // both must pass; each runs its own action
 public CompletionStage<Result> auditedInvoices(Http.Request req) { ... }
 ```
+
+Two meanings of "authenticate"
+Authenticating a principal — establishing who someone is (a login). This happened earlier, at the authorization server, and the RS never repeats it.
+Authenticating a message/credential — establishing that this artifact is genuine: really issued by the party it claims, unmodified, not expired, meant for me. This is what the RS does to the access token.
+
+Think of the access token like a wristband at a concert. The wristband itself doesn't tell security who you are — but the venue staff still "check" (authenticate) that it's a real, unaltered, non-expired wristband from the right event before they authorize you to enter a specific section. Checking the wristband's authenticity ≠ checking your identity; it's a prerequisite step to enforcing authorization.
+
+### Why an authorization artifact still has to be authenticated
+This is the crux: the authorization grant is encoded as claims inside a credential, and claims are only worth anything if the credential is authentic.
+
+The token says "bearer may use scope `payments.write`, on behalf of `sub=alice`." That statement is an authorization grant — but it's just bytes. If the RS didn't first verify the signature (JWT) or call introspection (opaque), anyone could mint a token asserting any scope for any subject. Authorization decisions made on an unauthenticated credential are worthless, because the attacker controls the claims.
+
+So the RS does two ordered steps:
+- `Authenticate the token` — signature valid? issuer trusted? audience = me? not expired? → is this grant genuine?
+- `Authorize the request` — do the (now-trusted) claims carry the scope this endpoint needs? → does this genuine grant permit the action?
+
+Step 1 exists precisely because the token is an authorization artifact: you authenticate the credential so you can trust its authorization claims. Authorization presupposes an authenticated basis for the grant.
+
+A concert ticket authorizes entry. The gate staff still authenticate the ticket — check the hologram, scan the barcode against the issuer's system — to confirm it's genuine and not counterfeit. Authenticating the ticket is not authenticating you; it's authenticating the authorization artifact so its grant can be relied on. Access tokens are identical.
+
+
+Data origin authentication (a.k.a. message authentication) Proving that a specific artifact — a message, token, credential — genuinely came from the claimed source and hasn't been altered. it's about the integrity and provenance of the data itself.
+
+- RFC 4949 defines data origin authentication as: "The corroboration that the source of data received is as claimed," and message authentication as: "A service that, for any received message, provides assurance of the message's origin and integrity."
+- Handbook of Applied Cryptography, §9.1, covers this under MACs and digital signatures: assurance a message is from the alleged sender and untampered.
+
+`RedisDpopSingleUseChecker` — `app/infra/redis/RedisDpopSingleUseChecker.scala`: a distributed DPoP-proof `jti` single-use checker implementing Nimbus's `SingleUseChecker[DPoPProofUse]`, backed by `Redis/Valkey` via Sage — mirroring `RedisTokenDenylist/RedisDpopNonceStore`.
+
+Your nonce path is already multi-node (stateless HMAC validator with a shared key). But a stateless nonce is reusable within its freshness window by design — so within that window, the same proof (same `jti`, same nonce) replayed to a different node would pass, because the `jti` check was per-node in-memory. The Redis checker is the complement that closes exactly that in-window cross-node replay.
+
+A stateless nonce is an HMAC over a timestamp under a server key. Validating it is just re-computing the MAC — no lookup. So if every node shares the same key, any node validates any node's nonce. Nonces need a shared key, never a shared store
+
+So the Redis dependency is not for nonces. It's for the `jti` single-use set. The reason is the crucial distinction:
+
+- A stateless nonce proves freshness ("minted recently, by us") — but it is not single-use. Being stateless means keeping no memory, so the same nonce can be presented repeatedly within its lifetime. You cannot remember what you didn't store.
+- Preventing replay requires single-use, and single-use requires memory.
+
+So a stateless nonce alone leaves an in-window replay hole. Something must be single-use to close it — and that something is the `jti`.
+
+
+`jti` (JWT ID) is a unique identifier the client puts in every DPoP proof. "Single-use jti" means the resource server remembers each `jti` it accepts and rejects any repeat. It's the primary DPoP replay defence (RFC 9449 §11.1).
+
+What it prevents: DPoP proof replay. A proof is bound to method + URI + access-token, but it can be captured — from request logs, a mirrored/leaked request, a TLS-terminating proxy, a malicious downstream. Without single-use, an attacker who captures one valid proof can resubmit it to repeat the operation (e.g. run a transfer twice). The `jti` check makes each proof usable exactly once.
+
+Single node: one process sees every request, so an in-memory set is sufficient. No Redis needed for `jti`.
+Multi node: each node has its own memory, so an attacker replays the captured proof to a different node, which never saw that `jti` → accepted. Per-node memory is defeated by the load balancer

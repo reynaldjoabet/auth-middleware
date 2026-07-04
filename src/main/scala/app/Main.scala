@@ -1,9 +1,11 @@
 package app
 
+import auth.AuthEvents
 import cats.effect.{IO, IOApp, Resource}
 import cats.effect.unsafe.IORuntimeConfig
 import org.http4s.server.Server as Http4sServer
 import org.slf4j.LoggerFactory
+import org.typelevel.otel4s.oteljava.OtelJava
 import sage.backend.SageClient
 import scala.concurrent.duration.*
 import app.config.{AppConfigLoader, AppConfig}
@@ -22,7 +24,16 @@ object Main extends IOApp.Simple {
     for {
       redis <- SageClient.resource(cfg.redis.toSageConfig)
       denylist = RedisTokenDenylist[IO](redis)
-      server <- Server.resource[IO](cfg, denylist)
+      // GlobalOpenTelemetry, autoconfigured via the
+      // -Dotel.java.global-autoconfigure.enabled=true javaOption; noop when no
+      // exporter is configured, so local runs cost nothing.
+      otel <- Resource.eval(OtelJava.global[IO])
+      meter <- Resource.eval(otel.meterProvider.get("auth-middleware"))
+      otelEvents <- Resource.eval(AuthEvents.otel[IO](meter))
+      events = AuthEvents.combine(AuthEvents.slf4j[IO], otelEvents)
+      // No jti/nonce override: single node uses the in-memory jti checker and
+      // config-driven stateless nonces. Redis here backs only revocation.
+      server <- Server.resource[IO](cfg, denylist, events)
     } yield server
 
   val run: IO[Unit] =

@@ -1,8 +1,11 @@
 package auth
 
-import cats.Applicative
+import cats.syntax.all.*
+import cats.{Applicative, Monad}
 import cats.effect.Sync
 import org.slf4j.LoggerFactory
+import org.typelevel.otel4s.Attribute
+import org.typelevel.otel4s.metrics.Meter
 
 /** Observability hook for authentication outcomes.
   *
@@ -71,4 +74,55 @@ object AuthEvents {
         )
       )
   }
+
+  /** OpenTelemetry metrics sink — the port of Duende's `Telemetry` counters.
+    * Emits `auth.decisions` (attribute `auth.outcome`: `success` or the stable
+    * failure code) and `auth.challenges` separately: a challenge such as
+    * `use_dpop_nonce` is routine protocol flow and must never inflate failure
+    * rates or trip alerts. Only bounded, low-cardinality codes become
+    * attributes — never claim values or internal detail.
+    */
+  def otel[F[_]: Monad](meter: Meter[F]): F[AuthEvents[F]] =
+    for {
+      decisions <- meter
+        .counter[Long]("auth.decisions")
+        .withDescription("Authentication decisions, by stable outcome code")
+        .create
+      challenges <- meter
+        .counter[Long]("auth.challenges")
+        .withDescription(
+          "Protocol challenges issued (routine flow, not failures)"
+        )
+        .create
+    } yield new AuthEvents[F] {
+      def authSucceeded(ctx: AuthContext): F[Unit] =
+        decisions.inc(Attribute("auth.outcome", "success"))
+
+      def authFailed(error: AuthError, internalDetail: String): F[Unit] =
+        decisions.inc(Attribute("auth.outcome", outcomeCode(error)))
+
+      override def challengeIssued(
+          error: AuthError,
+          internalDetail: String
+      ): F[Unit] =
+        challenges.inc(Attribute("auth.outcome", outcomeCode(error)))
+    }
+
+  /** Fan out every decision to several sinks — e.g. `combine(slf4j, otelSink)`
+    * for structured logs plus metrics.
+    */
+  def combine[F[_]: Applicative](sinks: AuthEvents[F]*): AuthEvents[F] =
+    new AuthEvents[F] {
+      def authSucceeded(ctx: AuthContext): F[Unit] =
+        sinks.toList.traverse_(_.authSucceeded(ctx))
+
+      def authFailed(error: AuthError, internalDetail: String): F[Unit] =
+        sinks.toList.traverse_(_.authFailed(error, internalDetail))
+
+      override def challengeIssued(
+          error: AuthError,
+          internalDetail: String
+      ): F[Unit] =
+        sinks.toList.traverse_(_.challengeIssued(error, internalDetail))
+    }
 }

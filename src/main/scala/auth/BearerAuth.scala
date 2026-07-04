@@ -171,6 +171,16 @@ object BearerAuth {
         case _ => pass
       }
 
+    // Named for the http4s `AuthMiddleware` contract, and accurate in the
+    // security-literature sense: every step here is *authentication*, not
+    // authorization. `validator.validate` is data-origin authentication of the
+    // token (the credential is genuine, unmodified, from the trusted issuer,
+    // for us); `dpopCheck`/`mtlsCheck` are entity authentication of the sender
+    // (proof of possession of the bound key/certificate). The result is a
+    // verified `AuthContext` — the authenticated principal for the request.
+    // Authorization proper (scopes, acr, freshness) is deliberately *not* here;
+    // it is layered per route by `requireScopes`, `requireAcr`, `requireUser`
+    // and `requireFreshAuth`, which consume the `AuthContext` this produces.
     val authenticate: Kleisli[F, Request[F], Either[AuthError, AuthContext]] =
       Kleisli { req =>
         extractCredentials(req, dpopEnabled = dpop.isDefined) match {

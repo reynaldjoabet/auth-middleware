@@ -59,6 +59,11 @@ final case class RedisSettings(
     pingTimeout: FiniteDuration
 ) derives ConfigReader {
 
+  // Every entrypoint needs Redis (revocation denylist, and the shared DPoP jti
+  // set behind a load balancer). Reject an empty node list at config load rather
+  // than letting Sage silently fall back to a default localhost endpoint.
+  require(nodes.nonEmpty, "redis.nodes must list at least one endpoint")
+
   def toSageConfig: SageConfig = {
     val seeds = nodes.map(_.toEndpoint).toVector
     val topology = mode match {

@@ -26,8 +26,10 @@ import app.infra.redis.{RedisDpopSingleUseChecker, RedisTokenDenylist}
   * state* lives in a store shared by all nodes. The single difference from
   * [[Main]] is therefore not new logic — it is *where the replay-defence state
   * lives*. Below, everything tagged `[SHARED]` is moved off-heap into
-  * Redis/Valkey, and the process-local fallbacks [[Main]] tolerates for dev are
-  * refused at boot (see [[preflight]]).
+  * Redis/Valkey. A `dpop.nonce.key` shared by all nodes is required for the
+  * stateless nonces to validate across the cluster (an ephemeral per-process
+  * key works single-node but not here — [[Server]] logs loudly if it is
+  * missing).
   *
   * ==Replay defence: the two moving parts==
   *
@@ -92,8 +94,7 @@ import app.infra.redis.{RedisDpopSingleUseChecker, RedisTokenDenylist}
   *     defence hold behind a load balancer.
   *   - '''Stateless nonce (shared key)''' `[SHARED KEY]` — freshness only,
   *     wired in [[Server]] from `dpop.nonce.key`. No store, hence no per-proof
-  *     Redis round trip; the key must be the same on every node (enforced
-  *     below).
+  *     Redis round trip; the key must be the same on every node.
   *   - '''Postgres (HikariCP)''' — application data, pooled per node; part of
   *     the same lifecycle so it is released on shutdown.
   *   - '''OpenTelemetry `AuthEvents`''' — `auth.decisions` / `auth.challenges`
@@ -143,58 +144,19 @@ object MultiNodeMain extends IOApp.Simple {
 
   val run: IO[Unit] =
     AppConfigLoader.load[IO].flatMap { cfg =>
-      preflight(cfg) *>
-        // Never log cfg.db directly — the password is a plain String.
-        IO(
-          log.info(
-            "Multi-node start: http={}, db={}, redis={} node(s)",
-            cfg.http,
-            cfg.db.jdbcUrl,
-            cfg.redis.nodes.size
-          )
-        ) *>
+      // Never log cfg.db directly — the password is a plain String. Config
+      // invariants (e.g. redis.nodes non-empty) are enforced at load time by
+      // the settings themselves, so a bad config fails before we get here.
+      IO(
+        log.info(
+          "Multi-node start: http={}, db={}, redis={} node(s)",
+          cfg.http,
+          cfg.db.jdbcUrl,
+          cfg.redis.nodes.size
+        )
+      ) *>
         app(cfg).use { server =>
           IO(log.info("Server listening on {}", server.address)) *> IO.never
         }
     }
-
-  /** Refuse to boot on a misconfiguration that silently breaks the cluster.
-    *
-    * These are exactly the settings that "work on my one box" and then fail
-    * intermittently behind a load balancer — the worst failure mode — so we
-    * make the correctness-breaking ones a loud startup error, and warn on the
-    * security-posture ones (which still function).
-    */
-  private def preflight(cfg: AppConfig): IO[Unit] = {
-    val fatal = List.newBuilder[String]
-
-    // Shared jti state is mandatory for DPoP replay defence across nodes.
-    if (cfg.auth.dpop.enabled && cfg.redis.nodes.isEmpty)
-      fatal += "DPoP is enabled but no Redis nodes are configured (the shared jti single-use set is required)"
-
-    // Stateless nonces validate across nodes only under a shared, configured
-    // key; an ephemeral per-process key silently rejects every cross-node retry.
-    if (
-      cfg.auth.dpop.enabled && cfg.auth.dpop.nonce.enabled &&
-      cfg.auth.dpop.nonce.decodedKey.isEmpty
-    )
-      fatal += "DPoP nonces are enabled but dpop.nonce.key is not set (a shared key is required so any node can validate any node's nonce)"
-
-    val tlsWarn =
-      IO.whenA(!cfg.redis.tls)(
-        IO(
-          log.warn(
-            "Redis TLS is disabled — auth state (revocations, jtis) crosses the " +
-              "network in the clear. Acceptable only on a trusted private network."
-          )
-        )
-      )
-
-    val problems = fatal.result()
-    IO.raiseWhen(problems.nonEmpty)(
-      new IllegalStateException(
-        "Multi-node preflight failed:\n  - " + problems.mkString("\n  - ")
-      )
-    ) *> tlsWarn
-  }
 }

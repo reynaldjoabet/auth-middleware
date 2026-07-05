@@ -62,9 +62,9 @@ object Server {
       // Stateless (Duende-pattern) nonces: multi-node with a shared key, no
       // store. Without configured key material, fall back to an ephemeral
       // per-process key — fine for one node, useless behind a load balancer.
-      // A `nonceOverride` from the composition root (e.g. the strict,
-      // cluster-wide single-use RedisDpopNonceStore in MultiNodeMain) takes
-      // precedence over this config-driven default.
+      // A `nonceOverride` from the composition root takes precedence — used for
+      // the alternative nonce-anchored replay posture (a stateful, single-use
+      // RedisDpopNonceStore instead of a shared jti set).
       nonces <- nonceOverride match {
         case injected @ Some(_) =>
           Resource.pure[F, Option[DpopNonceValidator[F]]](injected)

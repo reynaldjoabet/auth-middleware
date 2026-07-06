@@ -57,7 +57,9 @@ lazy val root = (project in file("."))
       Dependencies.sageClientCe,
       Dependencies.sageClientZio,
       guice,
-      "jakarta.inject" % "jakarta.inject-api" % "2.0.1"
+      "jakarta.inject" % "jakarta.inject-api" % "2.0.1",
+      "com.outr" %% "scribe" % "3.19.0",
+      "com.outr" %% "scribe-slf4j" % "3.19.0"
     )
   )
   .enablePlugins(PlayJava)
@@ -69,3 +71,11 @@ addCommandAlias("fmt", "scalafmtAll; scalafmtSbt")
 addCommandAlias("fmtCheck", "scalafmtCheckAll; scalafmtSbtCheck")
 
 Test / parallelExecution := true
+// Required while src/main/java holds sources in this module: Scala pipelining's
+// early-output (sig) JARs don't carry Java-compiled classes downstream, so
+// Test/compile fails with bogus "not found" errors. Disable until the Java
+// sources move to their own subproject.
+// defaults to true in sbt 2.0.0
+ThisBuild / usePipelining := false
+
+ThisBuild / outputStrategy := Some(StdoutOutput)

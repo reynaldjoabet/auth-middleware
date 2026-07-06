@@ -5,6 +5,10 @@ import auth.dpop.{DpopConfig, DpopVerifier}
 import cats.effect.IO
 import cats.effect.kernel.Resource
 import com.nimbusds.jose.JOSEObjectType
+import com.nimbusds.jose.{JWSAlgorithm, JWSHeader}
+import com.nimbusds.jose.crypto.ECDSASigner
+import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
+import java.util.{Date, UUID}
 import com.nimbusds.oauth2.sdk.dpop.verifiers.DPoPProofUse
 import com.nimbusds.oauth2.sdk.util.singleuse.{
   AlreadyUsedException,
@@ -234,6 +238,71 @@ class DpopVerifierSpec extends DpopBaseSuite {
         )
       }
     }
+  }
+
+  // -- Required proof claims: each must be present (RFC 9449 §4.2-4.3) --------
+
+  /** Sign an arbitrary claims set as a dpop+jwt proof with the bound key, so a
+    * test can omit an individual required claim (which `dpopProof` always sets).
+    */
+  private def signProof(claims: JWTClaimsSet): String = {
+    val jwt = new SignedJWT(
+      new JWSHeader.Builder(JWSAlgorithm.ES256)
+        .`type`(new JOSEObjectType("dpop+jwt"))
+        .jwk(dpopKey.toPublicJWK)
+        .build(),
+      claims
+    )
+    jwt.sign(new ECDSASigner(dpopKey))
+    jwt.serialize()
+  }
+
+  /** A proof over `token` that includes each required claim unless toggled off. */
+  private def proofWith(
+      token: String,
+      jti: Boolean = true,
+      htm: Boolean = true,
+      htu: Boolean = true,
+      iat: Boolean = true,
+      ath: Boolean = true
+  ): String = {
+    var b = new JWTClaimsSet.Builder()
+    if (jti) b = b.jwtID(UUID.randomUUID.toString)
+    if (htm) b = b.claim("htm", "GET")
+    if (htu) b = b.claim("htu", accountsUri.renderString)
+    if (iat) b = b.issueTime(new Date())
+    if (ath) b = b.claim("ath", DpopVerifier.accessTokenHash(token))
+    signProof(b.build())
+  }
+
+  private def assertProofRejected(mkProof: String => String): IO[Unit] = {
+    val token = sign(dpopBoundClaims())
+    app().use(_.run(dpopRequest(token, mkProof(token))).flatMap(assertDpopRejected))
+  }
+
+  test("rejects a proof with no jti") {
+    assertProofRejected(t => proofWith(t, jti = false))
+  }
+  test("rejects a proof with no htm") {
+    assertProofRejected(t => proofWith(t, htm = false))
+  }
+  test("rejects a proof with no htu") {
+    assertProofRejected(t => proofWith(t, htu = false))
+  }
+  test("rejects a proof with no iat") {
+    assertProofRejected(t => proofWith(t, iat = false))
+  }
+  test("rejects a proof with no ath (would unbind it from the access token)") {
+    assertProofRejected(t => proofWith(t, ath = false))
+  }
+
+  test("sanity: proofWith with all claims present is accepted") {
+    val token = sign(dpopBoundClaims())
+    app().use(
+      _.run(dpopRequest(token, proofWith(token))).map(r =>
+        assertEquals(r.status, Status.Ok)
+      )
+    )
   }
 
   // -- Injected shared-store single-use checker (multi-node replay) -----------

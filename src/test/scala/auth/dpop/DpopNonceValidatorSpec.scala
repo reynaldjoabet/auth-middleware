@@ -182,7 +182,7 @@ class DpopNonceValidatorSpec extends DpopBaseSuite {
     Resource
       .eval(shared.fold(DpopNonceValidator.randomKey[IO])(IO.pure))
       .flatMap(key => Resource.eval(DpopNonceValidator.stateless[IO](key)))
-      .flatMap(store => app(nonces = Some(store)))
+      .flatMap(store => app(dpopNonceValidator = Some(store)))
 
   test("middleware: proof without a nonce is challenged, retry succeeds") {
     val token = sign(dpopBoundClaims())

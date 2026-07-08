@@ -71,7 +71,7 @@ object Server {
       // A `nonceOverride` from the composition root takes precedence — used for
       // the alternative nonce-anchored replay posture (a stateful, single-use
       // RedisDpopNonceStore instead of a shared jti set).
-      nonces <- nonceOverride match {
+      dpopNonceValidator <- nonceOverride match {
         case injected @ Some(_) =>
           Resource.pure[F, Option[DpopNonceValidator[F]]](injected)
         case None =>
@@ -98,7 +98,7 @@ object Server {
           else Resource.pure[F, Option[DpopNonceValidator[F]]](None)
       }
 
-      dpop <-
+      dpopVerifier <-
         if (cfg.auth.dpop.enabled)
           // jti single-use anchors DPoP replay defence. `None` -> per-node
           // in-memory (one node sees every request, so that suffices); a
@@ -108,13 +108,15 @@ object Server {
             .default[F](
               DpopConfig(),
               events,
-              nonces = nonces,
+              dpopNonceValidator = dpopNonceValidator,
               singleUseChecker = singleUseChecker
             )
             .map(Some(_))
         else Resource.pure[F, Option[DpopVerifier[F]]](None)
 
-      authMw = AccessTokenAuth.middleware[F](validator, events, dpop = dpop)
+      authMw =
+        AccessTokenAuth
+          .middleware[F](validator, events, dpopVerifier = dpopVerifier)
       httpApp = HttpApi.httpApp[F](ds, authMw)
       server <- EmberServerBuilder
         .default[F]

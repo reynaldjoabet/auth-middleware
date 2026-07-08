@@ -70,7 +70,7 @@ object AccessTokenAuth {
     *   whether plain bearer tokens are still accepted; see
     *   [[SenderConstraintPolicy]]. `cnf` bindings present on a token are always
     *   enforced regardless of this setting.
-    * @param dpop
+    * @param dpopVerifier
     *   enables the `DPoP` scheme and proof validation when set
     * @param clientCertificates
     *   enables mTLS certificate-bound token checks when set
@@ -81,85 +81,95 @@ object AccessTokenAuth {
       realm: String = "api",
       senderConstraint: SenderConstraintPolicy =
         SenderConstraintPolicy.EnforceWhenBound,
-      dpop: Option[DpopVerifier[F]] = None,
+      dpopVerifier: Option[DpopVerifier[F]] = None,
       clientCertificates: Option[ClientCertificates[F]] = None
   ): AuthMiddleware[F, AuthContext] = {
 
     val dpopAlgs: Option[String] =
-      dpop.map(_.algorithms.toSeq.map(_.getName).sorted.mkString(" "))
+      dpopVerifier.map(_.algorithms.toSeq.map(_.getName).sorted.mkString(" "))
 
     def fail(error: AuthError, detail: String): F[Either[AuthError, Unit]] =
       events.authFailed(error, detail).as(error.asLeft)
 
     val pass: F[Either[AuthError, Unit]] = ().asRight[AuthError].pure[F]
 
-    // RFC 9449: a cnf.jkt-bound token requires the DPoP scheme and a valid proof;
-    // a bound token downgraded to Bearer, or the DPoP scheme without a binding,
-    // is rejected.
-    def dpopCheck(
+    // The token's `cnf` binding is the source of truth: the AS baked it in, and
+    // it admits exactly one presentation scheme. So dispatch on the binding
+    // first and check the scheme against it — each binding gets its one
+    // accepting scheme and its one rejecting one, side by side. This single
+    // exhaustive match is the whole scheme×binding matrix; keeping it in one
+    // place is deliberate, so the invariant (an mTLS-bound token rides Bearer, a
+    // DPoP-bound token rides DPoP) can't be smeared across separate checks where
+    // a gap could open.
+    def senderConstraintCheck(
         req: Request[F],
         scheme: TokenScheme,
         token: String,
         ctx: AuthContext
-    ): F[Either[AuthError, Unit]] = {
-      val boundJkt =
-        ctx.confirmation.collect { case ConfirmationClaim.DPoP(jkt) => jkt }
-      (scheme, boundJkt) match {
-        case (TokenScheme.Dpop, Some(jkt)) =>
-          dpop.fold(
+    ): F[Either[AuthError, Unit]] =
+      (ctx.confirmation, scheme) match {
+        // DPoP-bound (cnf.jkt): legal only on the DPoP scheme. Verify the proof
+        // binds key, request and token; reject a Bearer downgrade.
+        case (Some(ConfirmationClaim.DPoP(jkt)), TokenScheme.Dpop) =>
+          dpopVerifier.fold(
             fail(
               AuthError.InvalidToken.WrongScheme,
               "DPoP scheme used but DPoP is not enabled"
             )
-          )(
-            _.verifyBinding(req, token, jkt)
-          )
-        case (TokenScheme.Dpop, None) =>
-          fail(
-            AuthError.InvalidToken.NotDpopBound,
-            "DPoP scheme with a token lacking cnf.jkt"
-          )
-        case (TokenScheme.Bearer, Some(_)) =>
+          )(_.verifyBinding(req, token, jkt))
+        case (Some(ConfirmationClaim.DPoP(_)), TokenScheme.Bearer) =>
           fail(
             AuthError.InvalidToken.DpopBindingRequired,
             "DPoP-bound token presented as Bearer"
           )
-        case (TokenScheme.Bearer, None) =>
+
+        // mTLS-bound (cnf.x5t#S256): legal only on Bearer (RFC 8705). Verify the
+        // client certificate; reject presentation under the DPoP scheme (same
+        // client-facing error as the unbound case, distinct detail).
+        case (Some(ConfirmationClaim.MutualTls(x5tS256)), TokenScheme.Bearer) =>
+          verifyCertBinding(req, x5tS256)
+        case (Some(ConfirmationClaim.MutualTls(_)), TokenScheme.Dpop) =>
+          fail(
+            AuthError.InvalidToken.NotDpopBound,
+            "mTLS-bound token (cnf.x5t#S256) presented with the DPoP scheme"
+          )
+
+        // Unbound: plain bearer only; policyCheck decides whether that is
+        // acceptable. The DPoP scheme requires a cnf.jkt binding.
+        case (None, TokenScheme.Bearer) =>
           pass
+        case (None, TokenScheme.Dpop) =>
+          fail(
+            AuthError.InvalidToken.NotDpopBound,
+            "DPoP scheme with a token that carries no cnf binding"
+          )
       }
-    }
 
     // RFC 8705 §3: a cnf.x5t#S256-bound token is only valid on a connection that
     // presented the matching client certificate.
-    def mtlsCheck(
+    def verifyCertBinding(
         req: Request[F],
-        ctx: AuthContext
+        expectedx5tS256: CertificateThumbprint
     ): F[Either[AuthError, Unit]] =
-      ctx.confirmation.collect { case ConfirmationClaim.MutualTls(x5tS256) =>
-        x5tS256
-      } match {
-        case None                  => pass
-        case Some(expectedx5tS256) =>
-          clientCertificates match {
+      clientCertificates match {
+        case None =>
+          fail(
+            AuthError.InvalidToken.CertificateBindingFailed,
+            "certificate-bound token but no client certificate source is configured"
+          )
+        case Some(certs) =>
+          certs.extract(req).flatMap {
+            case Some(cert) if Mtls.matches(cert, expectedx5tS256) => pass
+            case Some(_)                                           =>
+              fail(
+                AuthError.InvalidToken.CertificateBindingFailed,
+                "certificate thumbprint mismatch"
+              )
             case None =>
               fail(
                 AuthError.InvalidToken.CertificateBindingFailed,
-                "certificate-bound token but no client certificate source is configured"
+                "no client certificate presented"
               )
-            case Some(certs) =>
-              certs.extract(req).flatMap {
-                case Some(cert) if Mtls.matches(cert, expectedx5tS256) => pass
-                case Some(_)                                           =>
-                  fail(
-                    AuthError.InvalidToken.CertificateBindingFailed,
-                    "certificate thumbprint mismatch"
-                  )
-                case None =>
-                  fail(
-                    AuthError.InvalidToken.CertificateBindingFailed,
-                    "no client certificate presented"
-                  )
-              }
           }
       }
 
@@ -177,7 +187,7 @@ object AccessTokenAuth {
     // security-literature sense: every step here is *authentication*, not
     // authorization. `validator.validate` is data-origin authentication of the
     // token (the credential is genuine, unmodified, from the trusted issuer,
-    // for us); `dpopCheck`/`mtlsCheck` are entity authentication of the sender
+    // for us); `senderConstraintCheck` is entity authentication of the sender
     // (proof of possession of the bound key/certificate). The result is a
     // verified `AuthContext` — the authenticated principal for the request.
     // Authorization proper (scopes, acr, freshness) is deliberately *not* here;
@@ -185,7 +195,7 @@ object AccessTokenAuth {
     // and `requireFreshAuth`, which consume the `AuthContext` this produces.
     val authenticate: Kleisli[F, Request[F], Either[AuthError, AuthContext]] =
       Kleisli { req =>
-        extractCredentials(req, dpopEnabled = dpop.isDefined) match {
+        extractCredentials(req, dpopEnabled = dpopVerifier.isDefined) match {
           case Left(err) =>
             events
               .authFailed(err, "no usable credentials on request")
@@ -193,8 +203,7 @@ object AccessTokenAuth {
           case Right((scheme, token)) =>
             (for {
               ctx <- EitherT(validator.validate(token))
-              _ <- EitherT(dpopCheck(req, scheme, token, ctx))
-              _ <- EitherT(mtlsCheck(req, ctx))
+              _ <- EitherT(senderConstraintCheck(req, scheme, token, ctx))
               _ <- EitherT(policyCheck(ctx))
             } yield ctx).value
         }
@@ -213,7 +222,7 @@ object AccessTokenAuth {
     // keeps steady state at one round trip per call; rotating on failure hands
     // the client the nonce it needs to recover immediately — a proof rejected
     // after its nonce was consumed would otherwise cost two more round trips.
-    dpop.flatMap(_.dpopNonceValidator) match {
+    dpopVerifier.flatMap(_.dpopNonceValidator) match {
       case None            => base
       case Some(validator) =>
         routes =>

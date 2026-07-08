@@ -172,9 +172,9 @@ object DpopVerifier {
     *     by a shared store (e.g. Redis) so a replayed proof is caught whichever
     *     node it lands on. A supplied checker is owned by the caller; only the
     *     default in-memory one is created and shut down by this `Resource`.
-    *   - `nonces`: when supplied, RS-provided nonces (RFC 9449 §8-9) are
-    *     *required* on every proof. This is the FAPI 2.0 fix for DPoP Proof
-    *     Replay — jti single-use alone cannot stop a network attacker who
+    *   - `dpopNonceValidator`: when supplied, RS-provided nonces (RFC 9449
+    *     §8-9) are *required* on every proof. This is the FAPI 2.0 fix for DPoP
+    *     Proof Replay — jti single-use alone cannot stop a network attacker who
     *     blocks the honest request, since the RS never sees the original. Leave
     *     it `None` only where mTLS binding or a lower risk tier applies.
     *
@@ -192,7 +192,7 @@ object DpopVerifier {
   def default[F[_]: Sync](
       config: DpopConfig,
       events: AuthEvents[F],
-      nonces: Option[DpopNonceValidator[F]] = None,
+      dpopNonceValidator: Option[DpopNonceValidator[F]] = None,
       singleUseChecker: Option[SingleUseChecker[DPoPProofUse]] = None
   ): Resource[F, DpopVerifier[F]] =
     Resource
@@ -229,7 +229,7 @@ object DpopVerifier {
       .map { case (nimbus, _) =>
         // Alias: inside the anonymous class `dpopNonceValidator` is the trait member, which
         // would self-reference the parameter it is meant to expose.
-        val defaultDpopNonceValidator = nonces
+        val defaultDpopNonceValidator = dpopNonceValidator
         new DpopVerifier[F] {
 
           val algorithms: Set[JWSAlgorithm] = config.allowedAlgorithms

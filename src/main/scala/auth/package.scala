@@ -145,10 +145,12 @@ object MintedJwtId
 type ReceivedJwtId = ReceivedJwtId.T
 object ReceivedJwtId extends RefinedType[String, Not[Blank] & MaxLength[256]]
 
-/** acr values; `Other` keeps an unrecognised value representable so policy can
-  * reject it explicitly rather than failing to parse the token.
+/** Curated `acr` values the authorization server mints into id tokens (as
+  * opposed to the opaque [[Acr]] newtype an RS sees on the wire). `Other` keeps
+  * an unrecognised value representable so policy can reject it explicitly
+  * rather than failing to parse the token.
   */
-enum Acr2 {
+enum AcrValue {
   case Level1, Level2, Level3, PhishingResistant, TransactionSigning
   case Other(value: String)
 }

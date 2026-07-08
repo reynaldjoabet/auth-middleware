@@ -1395,4 +1395,13 @@ for (String exactMatch: exactMatchClaims.getClaims().keySet()) {
 }
 ```
 
-HTTP Authorization scheme — the literal first token in `Authorization: <scheme> <token>.` Only two exist here: Bearer (RFC 6750) and DPoP (RFC 9449). These are registered HTTP auth schemes
+The HTTP Authorization scheme is the literal first token in `Authorization: <scheme> <token>` — only two exist here: `Bearer` (RFC 6750) and `DPoP` (RFC 9449), both registered HTTP auth schemes. But the scheme is only the client's *claim* about how it's presenting the token. The token's `cnf` confirmation is the source of truth — the AS baked it in, and it admits exactly one legal scheme. So the matrix is grouped by binding: each binding has one accepting scheme and one rejecting one.
+
+| Confirmation (token binding) | Scheme | Outcome |
+| --- | --- | --- |
+| `DPoP(jkt)` | DPoP | verify proof binding (or reject if DPoP disabled) |
+| `DPoP(jkt)` | Bearer | reject — downgrade |
+| `MutualTls` | Bearer | verify client certificate |
+| `MutualTls` | DPoP | **reject** — *"mTLS-bound token presented with the DPoP scheme"* |
+| none | Bearer | pass (policy decides) |
+| none | DPoP | reject — no cnf binding |

@@ -49,17 +49,21 @@ abstract class DpopBaseSuite extends CatsEffectSuite {
     */
   protected def app(
       policy: SenderConstraintPolicy = SenderConstraintPolicy.EnforceWhenBound,
-      nonces: Option[DpopNonceValidator[IO]] = None
+      dpopNonceValidator: Option[DpopNonceValidator[IO]] = None
   ): Resource[IO, HttpApp[IO]] =
     DpopVerifier
-      .default[IO](DpopConfig(), AuthEvents.noop[IO], nonces = nonces)
+      .default[IO](
+        DpopConfig(),
+        AuthEvents.noop[IO],
+        dpopNonceValidator = dpopNonceValidator
+      )
       .map { verifier =>
         AccessTokenAuth
           .middleware(
             validator,
             AuthEvents.noop[IO],
             senderConstraint = policy,
-            dpop = Some(verifier)
+            dpopVerifier = Some(verifier)
           )
           .apply(routes)
           .orNotFound
@@ -68,7 +72,7 @@ abstract class DpopBaseSuite extends CatsEffectSuite {
   protected def appWithNonces: Resource[IO, HttpApp[IO]] =
     Resource
       .eval(DpopNonceValidator.inMemory[IO]())
-      .flatMap(store => app(nonces = Some(store)))
+      .flatMap(store => app(dpopNonceValidator = Some(store)))
 
   protected def dpopRequest(token: String, proof: String): Request[IO] =
     Request[IO](Method.GET, accountsUri)

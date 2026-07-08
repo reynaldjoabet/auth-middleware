@@ -2,6 +2,7 @@ package auth
 package dpop
 
 import auth.dpop.{DpopConfig, DpopVerifier}
+import auth.mtls.Mtls
 
 import cats.effect.IO
 import cats.effect.kernel.Resource
@@ -45,6 +46,26 @@ class DpopVerifierSpec extends DpopBaseSuite {
         _ = assertEquals(resp.status, Status.Ok)
         body <- resp.as[String]
       } yield assertEquals(body, "user-123")
+    }
+  }
+
+  test("rejects an mTLS-bound token presented under the DPoP scheme") {
+    // (Dpop, MutualTls) is the scheme×binding cell an mTLS token can never
+    // legally hit: RFC 8705 tokens ride the Bearer scheme. The proof is
+    // irrelevant — the token is rejected on the scheme/binding mismatch before
+    // any proof verification.
+    val x5t = Mtls.thumbprint(
+      Mtls.parsePem(clientCertPem).getOrElse(fail("test cert must parse"))
+    )
+    val token = sign(mtlsBoundClaims(x5t))
+    app().use { a =>
+      a.run(dpopRequest(token, "unused-proof")).map { resp =>
+        assertEquals(resp.status, Status.Unauthorized)
+        assert(
+          challengeOf(resp).contains("""error="invalid_token""""),
+          challengeOf(resp)
+        )
+      }
     }
   }
 
@@ -339,7 +360,11 @@ class DpopVerifierSpec extends DpopBaseSuite {
       )
       .map { verifier =>
         AccessTokenAuth
-          .middleware(validator, AuthEvents.noop[IO], dpop = Some(verifier))
+          .middleware(
+            validator,
+            AuthEvents.noop[IO],
+            dpopVerifier = Some(verifier)
+          )
           .apply(routes)
           .orNotFound
       }

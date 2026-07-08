@@ -1,4 +1,7 @@
 package auth
+package revocation
+
+import auth.accesstoken.*
 import auth.revocation.{TokenDenylist, TokenIntrospection}
 
 import scala.concurrent.duration.*
@@ -182,8 +185,8 @@ class TokenIntrospectionSpec extends CatsEffectSuite {
       def check(rawToken: String): IO[Result] = IO.pure(result)
     }
 
-  private def validatorWith(result: Result): JwtValidator[IO] =
-    JwtValidator.fromKeySource[IO](
+  private def validatorWith(result: Result): AccessTokenValidator[IO] =
+    AccessTokenValidator.withKeySource[IO](
       config,
       keySource,
       AuthEvents.noop[IO],

@@ -1,4 +1,6 @@
 package auth
+
+import auth.accesstoken.*
 import auth.revocation.TokenDenylist
 
 import cats.effect.IO
@@ -8,7 +10,7 @@ class AuditSpec extends CatsEffectSuite {
   import TestTokens.*
 
   private val validator =
-    JwtValidator.fromKeySource[IO](
+    AccessTokenValidator.withKeySource[IO](
       config,
       keySource,
       AuthEvents.noop[IO],

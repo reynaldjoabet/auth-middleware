@@ -10,15 +10,21 @@ import munit.FunSuite
   */
 class RefinedTypesSpec extends FunSuite {
 
-  private def accepts(rt: String => Option[Any], name: String)(vs: String*): Unit =
+  private def accepts(rt: String => Option[Any], name: String)(
+      vs: String*
+  ): Unit =
     vs.foreach(v => assert(rt(v).isDefined, s"$name should ACCEPT: [$v]"))
 
-  private def rejects(rt: String => Option[Any], name: String)(vs: String*): Unit =
+  private def rejects(rt: String => Option[Any], name: String)(
+      vs: String*
+  ): Unit =
     vs.foreach(v => assert(rt(v).isEmpty, s"$name should REJECT: [$v]"))
 
   private val b64 = "A" * 43 // 43-char base64url = a SHA-256 thumbprint
 
-  test("Issuer: https only, no query or fragment (token substitution surface)") {
+  test(
+    "Issuer: https only, no query or fragment (token substitution surface)"
+  ) {
     accepts(Issuer.option, "Issuer")(
       "https://auth.example.com",
       "https://auth.example.com/realms/fintech"
@@ -61,7 +67,9 @@ class RefinedTypesSpec extends FunSuite {
     rejects(AccessTokenHash.option, "AccessTokenHash")("short")
   }
 
-  test("SignedJwt/DpopProofJwt: three non-empty segments (rejects alg:none shape)") {
+  test(
+    "SignedJwt/DpopProofJwt: three non-empty segments (rejects alg:none shape)"
+  ) {
     accepts(SignedJwt.option, "SignedJwt")("aaa.bbb.ccc", "h-_.p-_.s-_")
     rejects(SignedJwt.option, "SignedJwt")(
       "aaa.bbb", // unsecured / 2-segment
@@ -75,7 +83,9 @@ class RefinedTypesSpec extends FunSuite {
     rejects(DpopProofJwt.option, "DpopProofJwt")("aaa.bbb")
   }
 
-  test("ReceivedJwtId: non-blank, bounded at 256 (DoS safety for a peer value)") {
+  test(
+    "ReceivedJwtId: non-blank, bounded at 256 (DoS safety for a peer value)"
+  ) {
     accepts(ReceivedJwtId.option, "ReceivedJwtId")("jti-123", "a" * 256)
     rejects(ReceivedJwtId.option, "ReceivedJwtId")("", "   ", "a" * 257)
   }

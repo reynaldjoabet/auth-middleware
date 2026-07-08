@@ -64,10 +64,10 @@ import app.infra.redis.{RedisDpopSingleUseChecker, RedisTokenDenylist}
   *
   *                               request -> Node_i
   *                                   |
-  *   +---------------------- BearerAuth.middleware -----------------------+
+  *   +---------------------- AccessTokenAuth.middleware -----------------------+
   *   | AUTHENTICATE  (is the credential + sender genuine?)                |
   *   |   1. extractCredentials    Bearer | DPoP; reject ?access_token=    |
-  *   |   2. JwtValidator.validate  sig,iss,aud,exp,typ,required     ------+--> AS /jwks       (cached per node)
+  *   |   2. AccessTokenValidator.validate  sig,iss,aud,exp,typ,required     ------+--> AS /jwks       (cached per node)
   *   |        - revocation denylist                                 ------+--> Redis EXISTS revoked:jti     [SHARED]
   *   |        - introspection (opaque tokens, RFC 7662)             ------+--> AS /introspect
   *   |   3. DpopVerifier.verify    htu,htm,iat,ath,cnf.jkt                |

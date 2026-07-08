@@ -1,10 +1,19 @@
 package auth
+package accesstoken
 
 import java.net.URI
 import scala.concurrent.duration.*
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
 
-/** Configuration for JWT access-token validation.
+/** Configuration for validating OAuth 2.0 access tokens (RFC 9068 profile).
+  *
+  * Used by [[AccessTokenValidator.default]] and
+  * [[AccessTokenValidator.withKeySource]] to enforce access token required
+  * claims, issuer, audience, and lifetime checks.
+  *
+  * '''Note:''' This config is for access tokens only. DPoP proofs use
+  * [[DpopConfig]] and are verified separately via [[DpopVerifier]]; the two JWT
+  * types have incompatible required claims and lifecycles.
   *
   * Defaults are deliberately strict, as appropriate for a fintech API:
   *   - only asymmetric signature algorithms are accepted (no HMAC, and
@@ -53,14 +62,14 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
   * @param jwksSizeLimitBytes
   *   maximum accepted size of the JWKS document
   */
-final case class AuthConfig(
+final case class AccessTokenConfig(
     issuer: String,
     audience: String,
     jwksUri: URI,
     allowedAlgorithms: Set[JWSAlgorithm] =
       Set(JWSAlgorithm.RS256, JWSAlgorithm.PS256, JWSAlgorithm.ES256),
     acceptedTokenTypes: Set[JOSEObjectType] =
-      Set(new JOSEObjectType("at+jwt"), JOSEObjectType.JWT),
+      Set(AccessTokenConfig.JoseTypeAtJwt, JOSEObjectType.JWT),
     clockSkew: FiniteDuration = 30.seconds,
     requiredClaims: Set[String] = Set("sub", "exp", "iat", "client_id", "jti"),
     maxTokenLength: Int = 8192,
@@ -86,4 +95,10 @@ final case class AuthConfig(
     "HMAC algorithms are not supported with a JWKS-based verifier; use asymmetric algorithms"
   )
   require(maxTokenLength > 0, "maxTokenLength must be positive")
+}
+
+object AccessTokenConfig {
+
+  /** JOSE `typ` for RFC 9068 JWT access tokens. */
+  val JoseTypeAtJwt: JOSEObjectType = new JOSEObjectType("at+jwt")
 }

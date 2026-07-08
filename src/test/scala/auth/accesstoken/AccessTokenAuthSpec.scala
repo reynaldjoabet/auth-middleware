@@ -1,4 +1,7 @@
 package auth
+package accesstoken
+
+import auth.accesstoken.*
 import auth.revocation.TokenDenylist
 
 import cats.effect.IO
@@ -22,7 +25,7 @@ import org.http4s.headers.Authorization
 import org.http4s.implicits.*
 import org.typelevel.ci.*
 
-class BearerAuthSpec extends CatsEffectSuite {
+class AccessTokenAuthSpec extends CatsEffectSuite {
   import TestTokens.*
 
   private object dsl extends Http4sDsl[IO]
@@ -35,7 +38,7 @@ class BearerAuthSpec extends CatsEffectSuite {
   // partially-initialized `this`.
 
   private val validator =
-    JwtValidator.fromKeySource[IO](
+    AccessTokenValidator.withKeySource[IO](
       config,
       keySource,
       AuthEvents.noop[IO],
@@ -52,20 +55,20 @@ class BearerAuthSpec extends CatsEffectSuite {
   }
 
   private val authMiddleware =
-    BearerAuth.middleware(validator, AuthEvents.noop[IO])
+    AccessTokenAuth.middleware(validator, AuthEvents.noop[IO])
 
   private val app = authMiddleware(routes).orNotFound
 
   private val paymentsApp =
     authMiddleware(
-      BearerAuth.requireScopes[IO](Set(ScopeToken("payments:write")))(
+      AccessTokenAuth.requireScopes[IO](Set(ScopeToken("payments:write")))(
         paymentRoutes
       )
     ).orNotFound
 
   private val multiScopeApp =
     authMiddleware(
-      BearerAuth.requireScopes[IO](
+      AccessTokenAuth.requireScopes[IO](
         Set(ScopeToken("payments:write"), ScopeToken("accounts:read"))
       )(paymentRoutes)
     ).orNotFound
@@ -74,23 +77,23 @@ class BearerAuthSpec extends CatsEffectSuite {
 
   // strength only
   private val acrApp = authMiddleware(
-    BearerAuth.requireAcr[IO](sca)(paymentRoutes)
+    AccessTokenAuth.requireAcr[IO](sca)(paymentRoutes)
   ).orNotFound
   // strength + freshness, composed
   private def freshAcrApp(maxAge: MaxAuthAge) =
     authMiddleware(
-      BearerAuth.requireAcr[IO](sca)(
-        BearerAuth.requireFreshAuth[IO](maxAge)(paymentRoutes)
+      AccessTokenAuth.requireAcr[IO](sca)(
+        AccessTokenAuth.requireFreshAuth[IO](maxAge)(paymentRoutes)
       )
     ).orNotFound
   // freshness only (any acr)
   private def freshApp(maxAge: MaxAuthAge) =
     authMiddleware(
-      BearerAuth.requireFreshAuth[IO](maxAge)(paymentRoutes)
+      AccessTokenAuth.requireFreshAuth[IO](maxAge)(paymentRoutes)
     ).orNotFound
 
   private val userApp = authMiddleware(
-    BearerAuth.requireUser[IO]()(routes)
+    AccessTokenAuth.requireUser[IO]()(routes)
   ).orNotFound
 
   private val readScope = ScopeToken("accounts:read")
@@ -98,24 +101,26 @@ class BearerAuthSpec extends CatsEffectSuite {
   // scopes (outer) → user (inner)
   private val scopeThenUser =
     authMiddleware(
-      BearerAuth.requireScopes[IO](Set(readScope))(
-        BearerAuth.requireUser[IO]()(routes)
+      AccessTokenAuth.requireScopes[IO](Set(readScope))(
+        AccessTokenAuth.requireUser[IO]()(routes)
       )
     ).orNotFound
 
   // user (outer) → scopes (inner): same checks, opposite precedence
   private val userThenScope =
     authMiddleware(
-      BearerAuth.requireUser[IO]()(
-        BearerAuth.requireScopes[IO](Set(readScope))(routes)
+      AccessTokenAuth.requireUser[IO]()(
+        AccessTokenAuth.requireScopes[IO](Set(readScope))(routes)
       )
     ).orNotFound
 
   // scopes → user → acr (full stack)
   private val fullStack =
     authMiddleware(
-      BearerAuth.requireScopes[IO](Set(readScope))(
-        BearerAuth.requireUser[IO]()(BearerAuth.requireAcr[IO](sca)(routes))
+      AccessTokenAuth.requireScopes[IO](Set(readScope))(
+        AccessTokenAuth.requireUser[IO]()(
+          AccessTokenAuth.requireAcr[IO](sca)(routes)
+        )
       )
     ).orNotFound
 
@@ -123,8 +128,8 @@ class BearerAuthSpec extends CatsEffectSuite {
   // "high-value, no explicit requireUser" pairing.
   private val scopeThenAcr =
     authMiddleware(
-      BearerAuth.requireScopes[IO](Set(readScope))(
-        BearerAuth.requireAcr[IO](sca)(routes)
+      AccessTokenAuth.requireScopes[IO](Set(readScope))(
+        AccessTokenAuth.requireAcr[IO](sca)(routes)
       )
     ).orNotFound
 
@@ -234,7 +239,9 @@ class BearerAuthSpec extends CatsEffectSuite {
 
   test("requireScopes with no required scopes admits any authenticated token") {
     val openApp =
-      authMiddleware(BearerAuth.requireScopes[IO](Set.empty)(routes)).orNotFound
+      authMiddleware(
+        AccessTokenAuth.requireScopes[IO](Set.empty)(routes)
+      ).orNotFound
     openApp
       .run(get("/accounts", Some(sign(claims()))))
       .map(resp => assertEquals(resp.status, Status.Ok))
@@ -266,7 +273,7 @@ class BearerAuthSpec extends CatsEffectSuite {
     "requireScopes: a custom realm appears in the insufficient_scope challenge"
   ) {
     val customApp = authMiddleware(
-      BearerAuth
+      AccessTokenAuth
         .requireScopes[IO](Set(ScopeToken("payments:write")), realm = "bank")(
           paymentRoutes
         )
@@ -326,13 +333,13 @@ class BearerAuthSpec extends CatsEffectSuite {
       ): java.util.List[JWK] =
         throw new KeySourceException("JWKS endpoint unreachable")
     }
-    val downValidator = JwtValidator.fromKeySource[IO](
+    val downValidator = AccessTokenValidator.withKeySource[IO](
       config,
       downSource,
       AuthEvents.noop[IO],
       TokenDenylist.none[IO]
     )
-    val downMw = BearerAuth.middleware(downValidator, AuthEvents.noop[IO])
+    val downMw = AccessTokenAuth.middleware(downValidator, AuthEvents.noop[IO])
     val downApp = downMw(routes).orNotFound
     downApp.run(get("/accounts", Some(sign(claims())))).map { resp =>
       assertEquals(resp.status, Status.ServiceUnavailable)
@@ -399,7 +406,7 @@ class BearerAuthSpec extends CatsEffectSuite {
   ) {
     import scala.concurrent.duration.*
     val app = authMiddleware(
-      BearerAuth.requireAcr[IO](Acr("loa2"), Acr("loa3"))(paymentRoutes)
+      AccessTokenAuth.requireAcr[IO](Acr("loa2"), Acr("loa3"))(paymentRoutes)
     ).orNotFound
     app
       .run(payment(sign(acrClaims(Some("loa3"), 1.minute))))
@@ -411,7 +418,7 @@ class BearerAuthSpec extends CatsEffectSuite {
   ) {
     import scala.concurrent.duration.*
     val app = authMiddleware(
-      BearerAuth.requireAcr[IO](Acr("loa3"), Acr("loa2"), Acr("loa1"))(
+      AccessTokenAuth.requireAcr[IO](Acr("loa3"), Acr("loa2"), Acr("loa1"))(
         paymentRoutes
       )
     ).orNotFound
@@ -427,7 +434,7 @@ class BearerAuthSpec extends CatsEffectSuite {
   test("requireAcr: duplicate acr values are de-duplicated in the challenge") {
     import scala.concurrent.duration.*
     val app = authMiddleware(
-      BearerAuth.requireAcr[IO](sca, sca)(paymentRoutes)
+      AccessTokenAuth.requireAcr[IO](sca, sca)(paymentRoutes)
     ).orNotFound
     app.run(payment(sign(acrClaims(None, 1.minute)))).map { resp =>
       assertEquals(resp.status, Status.Unauthorized)
@@ -444,7 +451,7 @@ class BearerAuthSpec extends CatsEffectSuite {
   test("requireAcr: a custom realm appears in the challenge") {
     import scala.concurrent.duration.*
     val app = authMiddleware(
-      BearerAuth.requireAcr[IO](sca)(paymentRoutes, realm = "bank")
+      AccessTokenAuth.requireAcr[IO](sca)(paymentRoutes, realm = "bank")
     ).orNotFound
     app.run(payment(sign(acrClaims(None, 1.minute)))).map { resp =>
       assertEquals(resp.status, Status.Unauthorized)
@@ -505,7 +512,7 @@ class BearerAuthSpec extends CatsEffectSuite {
 
   test("requireFreshAuth: a custom realm appears in the challenge") {
     val app = authMiddleware(
-      BearerAuth.requireFreshAuth[IO](
+      AccessTokenAuth.requireFreshAuth[IO](
         MaxAuthAge.applyUnsafe(300),
         "bank"
       )(paymentRoutes)
@@ -524,7 +531,9 @@ class BearerAuthSpec extends CatsEffectSuite {
   ) {
     import scala.concurrent.duration.*
     val app = authMiddleware(
-      BearerAuth.requireFreshAuth[IO](MaxAuthAge.applyUnsafe(0))(paymentRoutes)
+      AccessTokenAuth.requireFreshAuth[IO](MaxAuthAge.applyUnsafe(0))(
+        paymentRoutes
+      )
     ).orNotFound
     app
       .run(payment(sign(acrClaims(Some("urn:openbanking:psd2:sca"), 1.minute))))
@@ -541,7 +550,7 @@ class BearerAuthSpec extends CatsEffectSuite {
   test("requireMfa: 401 acr_values=acr3 when the token carries no acr") {
     import scala.concurrent.duration.*
     val app =
-      authMiddleware(BearerAuth.requireMfa[IO]()(paymentRoutes)).orNotFound
+      authMiddleware(AccessTokenAuth.requireMfa[IO]()(paymentRoutes)).orNotFound
     app.run(payment(sign(acrClaims(None, 1.minute)))).map { resp =>
       assertEquals(resp.status, Status.Unauthorized)
       val challenge =
@@ -559,7 +568,7 @@ class BearerAuthSpec extends CatsEffectSuite {
   ) {
     import scala.concurrent.duration.*
     val app =
-      authMiddleware(BearerAuth.requireMfa[IO]()(paymentRoutes)).orNotFound
+      authMiddleware(AccessTokenAuth.requireMfa[IO]()(paymentRoutes)).orNotFound
     app.run(payment(sign(acrClaims(Some("acr3"), 30.minutes)))).map { resp =>
       assertEquals(resp.status, Status.Unauthorized)
       val challenge =
@@ -573,7 +582,7 @@ class BearerAuthSpec extends CatsEffectSuite {
   ) {
     import scala.concurrent.duration.*
     val app =
-      authMiddleware(BearerAuth.requireMfa[IO]()(paymentRoutes)).orNotFound
+      authMiddleware(AccessTokenAuth.requireMfa[IO]()(paymentRoutes)).orNotFound
     app
       .run(payment(sign(acrClaims(Some("acr3"), 1.minute))))
       .map(resp => assertEquals(resp.status, Status.Ok))
@@ -582,7 +591,7 @@ class BearerAuthSpec extends CatsEffectSuite {
   test("requireMfa: honors a custom mfaAcr and maxAge") {
     import scala.concurrent.duration.*
     val app = authMiddleware(
-      BearerAuth.requireMfa[IO](Acr("loa3"), MaxAuthAge.applyUnsafe(60))(
+      AccessTokenAuth.requireMfa[IO](Acr("loa3"), MaxAuthAge.applyUnsafe(60))(
         paymentRoutes
       )
     ).orNotFound
@@ -628,7 +637,7 @@ class BearerAuthSpec extends CatsEffectSuite {
     import scala.concurrent.duration.*
     // Treat "user present" as "the token carries an acr", regardless of sub.
     val app = authMiddleware(
-      BearerAuth.requireUser[IO](isUserPresent = _.acr.isDefined)(routes)
+      AccessTokenAuth.requireUser[IO](isUserPresent = _.acr.isDefined)(routes)
     ).orNotFound
     for {
       // default userPresent would admit (sub != client_id), but no acr present

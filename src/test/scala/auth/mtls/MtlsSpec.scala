@@ -1,4 +1,7 @@
 package auth
+package mtls
+
+import auth.accesstoken.*
 import auth.revocation.TokenDenylist
 
 import cats.effect.IO
@@ -27,7 +30,7 @@ class MtlsSpec extends CatsEffectSuite {
   private val x5tS256 = Mtls.thumbprint(clientCert)
 
   private val validator =
-    JwtValidator.fromKeySource[IO](
+    AccessTokenValidator.withKeySource[IO](
       config,
       keySource,
       AuthEvents.noop[IO],
@@ -41,7 +44,7 @@ class MtlsSpec extends CatsEffectSuite {
   private def app(
       policy: SenderConstraintPolicy = SenderConstraintPolicy.EnforceWhenBound
   ) =
-    BearerAuth
+    AccessTokenAuth
       .middleware(
         validator,
         AuthEvents.noop[IO],
@@ -97,7 +100,7 @@ class MtlsSpec extends CatsEffectSuite {
     "rejects a certificate-bound token when no certificate source is configured"
   ) {
     val noMtlsApp =
-      BearerAuth
+      AccessTokenAuth
         .middleware(validator, AuthEvents.noop[IO])
         .apply(routes)
         .orNotFound
@@ -126,7 +129,7 @@ class MtlsSpec extends CatsEffectSuite {
   test(
     "accepts a certificate-bound token via the TLS session (fromTlsSession)"
   ) {
-    val tlsApp = BearerAuth
+    val tlsApp = AccessTokenAuth
       .middleware(
         validator,
         AuthEvents.noop[IO],

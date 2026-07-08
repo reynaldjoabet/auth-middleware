@@ -104,10 +104,10 @@ object DpopNonceValidator {
     * the cross-node replay window: an attacker who captured a proof and plays
     * it against a *different* node has at most `lifetime` to do so. Duende
     * accepts exactly this trade (nonce validity = proof lifetime + skew); keep
-    * `lifetime` as tight as your clients' round trips allow. [[BearerAuth]]
-    * rotates `DPoP-Nonce` on every response, so an active client always holds a
-    * fresh value and only pays a `use_dpop_nonce` round trip after idling past
-    * `lifetime`.
+    * `lifetime` as tight as your clients' round trips allow.
+    * [[AccessTokenAuth]] rotates `DPoP-Nonce` on every response, so an active
+    * client always holds a fresh value and only pays a `use_dpop_nonce` round
+    * trip after idling past `lifetime`.
     *
     * Key rotation is first-class, mirroring ASP.NET DataProtection's key ring
     * (which Duende gets for free): mint with `key`, accept with `key` or any of

@@ -1,4 +1,5 @@
 package auth
+package revocation
 import auth.revocation.TokenDenylist
 
 import cats.effect.IO

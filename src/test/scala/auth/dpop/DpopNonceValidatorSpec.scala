@@ -1,4 +1,5 @@
 package auth
+package dpop
 import auth.dpop.{DpopNonceValidator, NonceValidationResult}
 
 import java.nio.charset.StandardCharsets

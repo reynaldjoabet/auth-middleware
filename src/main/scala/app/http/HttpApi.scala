@@ -12,7 +12,7 @@ import org.http4s.{AuthedRoutes, HttpApp, HttpRoutes}
 import app.infra.postgres.Database
 
 /** The HTTP surface: open liveness/readiness probes plus the access-token
-  * protected API mounted behind [[auth.BearerAuth]].
+  * protected API mounted behind [[auth.AccessTokenAuth]].
   *
   *   - `GET /health` — liveness, never touches the DB
   *   - `GET /ready` — readiness, validates a pooled connection

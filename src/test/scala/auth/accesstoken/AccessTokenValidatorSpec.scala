@@ -1,4 +1,6 @@
 package auth
+package accesstoken
+
 import auth.revocation.TokenDenylist
 
 import cats.effect.IO
@@ -13,15 +15,15 @@ import io.github.iltotore.iron.*
 import munit.CatsEffectSuite
 import scala.concurrent.duration.*
 
-class JwtValidatorSpec extends CatsEffectSuite {
+class AccessTokenValidatorSpec extends CatsEffectSuite {
   import TestTokens.*
 
   private def validator(
-      cfg: AuthConfig = config,
+      cfg: AccessTokenConfig = config,
       denylist: TokenDenylist[IO] = TokenDenylist.none[IO]
-  ): JwtValidator[IO] =
-    JwtValidator
-      .fromKeySource[IO](cfg, keySource, AuthEvents.noop[IO], denylist)
+  ): AccessTokenValidator[IO] =
+    AccessTokenValidator
+      .withKeySource[IO](cfg, keySource, AuthEvents.noop[IO], denylist)
 
   // The default token claims minus the named claim(s), to exercise the RFC 9068
   // §2.2 required-claims check. Round-trips through the JSON object so the key is
@@ -57,8 +59,8 @@ class JwtValidatorSpec extends CatsEffectSuite {
   )).foreach { drop =>
     test(s"rejects a token missing required claim(s): ${drop.mkString(", ")}") {
       val events = new CapturingEvents
-      val v = JwtValidator
-        .fromKeySource[IO](config, keySource, events, TokenDenylist.none[IO])
+      val v = AccessTokenValidator
+        .withKeySource[IO](config, keySource, events, TokenDenylist.none[IO])
       v.validate(sign(claimsWithout(drop*))).map { result =>
         assertEquals(result, Left(AuthError.InvalidToken.Rejected))
         assertEquals(
@@ -239,7 +241,7 @@ class JwtValidatorSpec extends CatsEffectSuite {
       ): java.util.List[JWK] =
         throw new KeySourceException("JWKS endpoint unreachable")
     }
-    val v = JwtValidator.fromKeySource[IO](
+    val v = AccessTokenValidator.withKeySource[IO](
       config,
       downSource,
       AuthEvents.noop[IO],
@@ -261,7 +263,7 @@ class JwtValidatorSpec extends CatsEffectSuite {
     }
   }
 
-  test("AuthConfig rejects a non-https jwksUri") {
+  test("AccessTokenConfig rejects a non-https jwksUri") {
     intercept[IllegalArgumentException] {
       config.copy(jwksUri =
         java.net.URI.create("http://auth.test.example/jwks")
@@ -269,13 +271,13 @@ class JwtValidatorSpec extends CatsEffectSuite {
     }
   }
 
-  test("AuthConfig rejects an HMAC signing algorithm") {
+  test("AccessTokenConfig rejects an HMAC signing algorithm") {
     intercept[IllegalArgumentException] {
       config.copy(allowedAlgorithms = Set(com.nimbusds.jose.JWSAlgorithm.HS256))
     }
   }
 
-  test("AuthConfig rejects an empty algorithm set") {
+  test("AccessTokenConfig rejects an empty algorithm set") {
     intercept[IllegalArgumentException](
       config.copy(allowedAlgorithms = Set.empty)
     )

@@ -1,4 +1,7 @@
 package auth
+package dpop
+
+import auth.accesstoken.*
 import auth.dpop.{DpopConfig, DpopNonceValidator, DpopVerifier}
 import auth.revocation.TokenDenylist
 
@@ -29,8 +32,8 @@ abstract class DpopBaseSuite extends CatsEffectSuite {
 
   protected val accountsUri = uri"https://api.test.example/accounts"
 
-  protected val validator: JwtValidator[IO] =
-    JwtValidator.fromKeySource[IO](
+  protected val validator: AccessTokenValidator[IO] =
+    AccessTokenValidator.withKeySource[IO](
       config,
       keySource,
       AuthEvents.noop[IO],
@@ -51,7 +54,7 @@ abstract class DpopBaseSuite extends CatsEffectSuite {
     DpopVerifier
       .default[IO](DpopConfig(), AuthEvents.noop[IO], nonces = nonces)
       .map { verifier =>
-        BearerAuth
+        AccessTokenAuth
           .middleware(
             validator,
             AuthEvents.noop[IO],

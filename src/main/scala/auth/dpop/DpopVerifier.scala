@@ -72,6 +72,16 @@ final case class DpopConfig(
 
 /** Verifies DPoP proofs (RFC 9449) presented alongside DPoP-bound access
   * tokens.
+  *
+  * This verifier is distinct from [[AccessTokenValidator]], which validates
+  * access tokens. Although both work with JWTs, they have incompatible claims
+  * and lifecycles:
+  *   - Access tokens are long-lived (hours) and issued by the authorization
+  *     server
+  *   - DPoP proofs are short-lived (seconds) and issued per-request by the
+  *     client
+  *
+  * See `docs/VALIDATOR_ARCHITECTURE.md` for the full architecture.
   */
 trait DpopVerifier[F[_]] {
 
@@ -80,20 +90,41 @@ trait DpopVerifier[F[_]] {
     */
   def algorithms: Set[JWSAlgorithm]
 
-  /** The nonce store when RFC 9449 §8-9 server-provided nonces are enforced.
-    * [[BearerAuth]] uses it to rotate the nonce: every response to a
-    * DPoP-scheme request carries a fresh `DPoP-Nonce` header (§8.2), so a
+  /** The DPoP nonce validator when RFC 9449 §8-9 server-provided nonces are
+    * enforced. [[AccessTokenAuth]] uses it to rotate the nonce: every response
+    * to a DPoP-scheme request carries a fresh `DPoP-Nonce` header (§8.2), so a
     * well-behaved client never needs a challenge round trip after the first.
     */
-  def nonces: Option[DpopNonceValidator[F]]
+  def dpopNonceValidator: Option[DpopNonceValidator[F]]
 
-  /** Verify the `DPoP` header of `req` against this request, the presented
-    * access token and the token's `cnf.jkt` thumbprint (RFC 9449 §4.3).
+  /** Verify that the DPoP proof is bound correctly to this request and the
+    * access token.
+    *
+    * Assumes the proof has already been validated as a JWT via
+    * [[DpopProofValidator]]. This method checks the DPoP-specific business
+    * logic:
+    *   - Key binding (proof's JWK thumbprint matches token's `cnf.jkt`)
+    *   - Request binding (proof's `htm`/`htu` match this request's method/URI)
+    *   - Proof freshness (proof's `iat` is recent)
+    *   - Replay prevention (proof's `jti` is single-use)
+    *   - Optional nonce validation (RFC 9449 §8-9 FAPI 2.0 fix)
+    *
+    * @param req
+    *   the HTTP request carrying the DPoP header
+    * @param accessToken
+    *   the access token string (to compute `ath` hash for comparison)
+    * @param cnfKeyThumbprint
+    *   the JWK thumbprint from the access token's `cnf.jkt` claim; the proof's
+    *   key must hash to exactly this value
+    * @return
+    *   Right(()) if proof is validly bound to this request and token;
+    *   Left(AuthError) if binding fails, with diagnostics reported via
+    *   AuthEvents
     */
-  def verify(
+  def verifyBinding(
       req: Request[F],
       accessToken: String,
-      expectedJkt: JwkThumbprint
+      cnfKeyThumbprint: JwkThumbprint
   ): F[Either[AuthError, Unit]]
 }
 
@@ -196,19 +227,20 @@ object DpopVerifier {
         ownedInMemory.fold(Sync[F].unit)(c => Sync[F].delay(c.shutdown()))
       }
       .map { case (nimbus, _) =>
-        // Alias: inside the anonymous class `nonces` is the trait member, which
+        // Alias: inside the anonymous class `dpopNonceValidator` is the trait member, which
         // would self-reference the parameter it is meant to expose.
-        val defaultNonces = nonces
+        val defaultDpopNonceValidator = nonces
         new DpopVerifier[F] {
 
           val algorithms: Set[JWSAlgorithm] = config.allowedAlgorithms
 
-          val nonces: Option[DpopNonceValidator[F]] = defaultNonces
+          val dpopNonceValidator: Option[DpopNonceValidator[F]] =
+            defaultDpopNonceValidator
 
-          def verify(
+          def verifyBinding(
               req: Request[F],
               accessToken: String,
-              expectedJkt: JwkThumbprint
+              cnfKeyThumbprint: JwkThumbprint
           ): F[Either[AuthError, Unit]] =
             req.headers.get(DpopHeader) match {
               case None =>
@@ -240,9 +272,15 @@ object DpopVerifier {
                       // RFC 9449 §8-9: when nonces are enforced, only a proof
                       // carrying a fresh, single-use, server-issued nonce is
                       // acceptable — the FAPI 2.0 fix for DPoP Proof Replay.
-                      nonces match {
+                      dpopNonceValidator match {
                         case None =>
-                          runNimbus(req, accessToken, expectedJkt, proof, null)
+                          verifyDpopProof(
+                            req,
+                            accessToken,
+                            cnfKeyThumbprint,
+                            proof,
+                            validatedNonce = null
+                          )
                         case Some(validator) =>
                           val presented = nonceClaimOf(proof)
                           validator.validateNonce(presented).flatMap { result =>
@@ -251,12 +289,12 @@ object DpopVerifier {
                                     Some(value),
                                     NonceValidationResult.Valid
                                   ) =>
-                                runNimbus(
+                                verifyDpopProof(
                                   req,
                                   accessToken,
-                                  expectedJkt,
+                                  cnfKeyThumbprint,
                                   proof,
-                                  new Nonce(value)
+                                  validatedNonce = new Nonce(value)
                                 )
                               case (None, NonceValidationResult.Valid) =>
                                 // defensive: no implementation may accept an
@@ -281,16 +319,26 @@ object DpopVerifier {
                   }
             }
 
-          /** Run the Nimbus cryptographic + claims verification.
-            * `expectedNonce` is `null` when nonces are not enforced; otherwise
-            * the already-validated value Nimbus re-checks against the proof.
+          /** Cryptographic + claims verification of the proof, delegated to
+            * Nimbus: signature (against the proof's own JWK header), key
+            * binding (thumbprint vs `cnfKeyThumbprint`), request binding
+            * (`htm`/`htu`), freshness (`iat`), access token hash (`ath`) and
+            * jti single-use.
+            *
+            * @param cnfKeyThumbprint
+            *   the JWK thumbprint from the access token's `cnf.jkt` claim; the
+            *   proof's key must hash to exactly this value
+            * @param validatedNonce
+            *   `null` when nonces are not enforced; otherwise a nonce this
+            *   verifier has already authenticated, which Nimbus re-checks
+            *   against the proof's `nonce` claim
             */
-          private def runNimbus(
+          private def verifyDpopProof(
               req: Request[F],
               accessToken: String,
-              expectedJkt: JwkThumbprint,
+              cnfKeyThumbprint: JwkThumbprint,
               proof: SignedJWT,
-              expectedNonce: Nonce
+              validatedNonce: Nonce
           ): F[Either[AuthError, Unit]] =
             // `blocking`: signature verification is CPU work and the single-use
             // check touches a shared map.
@@ -299,13 +347,13 @@ object DpopVerifier {
                 nimbus.verify(
                   req.method.name,
                   requestUri(req, config.assumeTls),
-                  new DPoPIssuer(expectedJkt.value: String),
+                  new DPoPIssuer(cnfKeyThumbprint.value: String),
                   proof,
                   new DPoPAccessToken(accessToken),
                   new JWKThumbprintConfirmation(
-                    new Base64URL(expectedJkt.value: String)
+                    new Base64URL(cnfKeyThumbprint.value: String)
                   ),
-                  expectedNonce
+                  validatedNonce
                 )
               }
               .attempt

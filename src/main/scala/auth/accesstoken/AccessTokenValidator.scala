@@ -1,4 +1,5 @@
 package auth
+package accesstoken
 
 import java.text.ParseException
 
@@ -24,7 +25,7 @@ import com.nimbusds.oauth2.sdk.dpop.JWKThumbprintConfirmation
 import auth.revocation.{TokenDenylist, TokenIntrospection}
 
 /** Validates OAuth 2.0 JWT access tokens (RFC 9068 profile). */
-trait JwtValidator[F[_]] {
+trait AccessTokenValidator[F[_]] {
 
   /** Fully validate a compact-serialized JWT: structure, JOSE `typ` header,
     * signature against the issuer's JWKS, issuer, audience, lifetime, required
@@ -35,13 +36,25 @@ trait JwtValidator[F[_]] {
   def validate(token: String): F[Either[AuthError, AuthContext]]
 }
 
-object JwtValidator {
+object AccessTokenValidator {
 
-  /** Production wiring: verification keys are fetched from `config.jwksUri` and
-    * cached, with rate limiting, retries and outage tolerance, so key rotation
-    * at the authorization server is picked up automatically and transient JWKS
-    * outages do not take the API down.
+  /** Production wiring for access token validation: verification keys are
+    * fetched from `config.jwksUri` and cached, with rate limiting, retries and
+    * outage tolerance, so key rotation at the authorization server is picked up
+    * automatically and transient JWKS outages do not take the API down.
     *
+    * This validator is specifically for OAuth 2.0 access tokens (RFC 9068): it
+    * enforces required claims (sub, exp, iat, client_id, jti), verifies issuer
+    * and audience, and supports optional revocation checks via denylist and RFC
+    * 7662 introspection.
+    *
+    * @param config
+    *   access token configuration (issuer, audience, JWKS URI, required claims)
+    * @param events
+    *   event sink for auth success/failure and diagnostics
+    * @param denylist
+    *   distributed revocation store (e.g. Redis); prevents use of revoked
+    *   tokens
     * @param introspection
     *   optional RFC 7662 revocation check against the authorization server —
     *   the Redis-free alternative to a distributed [[TokenDenylist]] (the
@@ -50,12 +63,12 @@ object JwtValidator {
     *   fails closed as 503. Build a second validator without it for route
     *   groups that should not pay the network hop.
     */
-  def remote[F[_]: Sync](
-      config: AuthConfig,
+  def default[F[_]: Sync](
+      config: AccessTokenConfig,
       events: AuthEvents[F],
       denylist: TokenDenylist[F],
       introspection: Option[TokenIntrospection[F]] = None
-  ): F[JwtValidator[F]] =
+  ): F[AccessTokenValidator[F]] =
     Sync[F]
       .delay {
         val retriever = new DefaultResourceRetriever(
@@ -73,27 +86,42 @@ object JwtValidator {
           .outageTolerant(config.jwksOutageTtl.toMillis)
           .build()
       }
-      .map(fromKeySource(config, _, events, denylist, introspection))
+      .map(withKeySource(config, _, events, denylist, introspection))
 
-  /** Build a validator over an explicit key source — used in tests and for
-    * non-HTTP key distribution.
+  /** Build an access token validator over an explicit key source — used in
+    * tests and for non-HTTP key distribution.
+    *
+    * Validates access tokens using the provided key source (instead of fetching
+    * from a remote JWKS URI). Useful for testing, key distribution via
+    * configuration, or air-gapped deployments.
+    *
+    * @param config
+    *   access token configuration
+    * @param keySource
+    *   explicit JWK source (not fetched remotely)
+    * @param events
+    *   event sink for diagnostics
+    * @param denylist
+    *   revocation store
+    * @param introspection
+    *   optional RFC 7662 introspection
     */
-  def fromKeySource[F[_]: Sync](
-      config: AuthConfig,
+  def withKeySource[F[_]: Sync](
+      config: AccessTokenConfig,
       keySource: JWKSource[SecurityContext],
       events: AuthEvents[F],
       denylist: TokenDenylist[F],
       introspection: Option[TokenIntrospection[F]] = None
-  ): JwtValidator[F] =
+  ): AccessTokenValidator[F] =
     new Impl[F](config, keySource, events, denylist, introspection)
 
   private final class Impl[F[_]: Sync](
-      config: AuthConfig,
+      config: AccessTokenConfig,
       keySource: JWKSource[SecurityContext],
       events: AuthEvents[F],
       denylist: TokenDenylist[F],
       introspection: Option[TokenIntrospection[F]]
-  ) extends JwtValidator[F] {
+  ) extends AccessTokenValidator[F] {
 
     private val processor: DefaultJWTProcessor[SecurityContext] = {
       val p = new DefaultJWTProcessor[SecurityContext]()
@@ -108,11 +136,19 @@ object JwtValidator {
           keySource
         )
       )
+      // The default implementation, DefaultJWTClaimsVerifier, checks exp / nbf (with clock-skew tolerance), and whatever exact-match/required claims you configured — iss, aud
+      // public DefaultJWTClaimsVerifier(final Set<String> acceptedAudience,
+      // 		final JWTClaimsSet exactMatchClaims,
+      // 		final Set<String> requiredClaims,
+      // 		final Set<String> prohibitedClaims)
+
       val claimsVerifier = new DefaultJWTClaimsVerifier[SecurityContext](
-        Set(config.audience).asJava,
-        new JWTClaimsSet.Builder().issuer(config.issuer).build(),
-        config.requiredClaims.asJava,
-        null
+        Set(config.audience).asJava, // acceptedAudience
+        new JWTClaimsSet.Builder()
+          .issuer(config.issuer)
+          .build(), // exactMatchClaims
+        config.requiredClaims.asJava, // requiredClaims
+        null // prohibitedClaims
       )
       claimsVerifier.setMaxClockSkew(config.clockSkew.toSeconds.toInt)
       p.setJWTClaimsSetVerifier(claimsVerifier)
@@ -304,4 +340,5 @@ object JwtValidator {
           }
       }
   }
+
 }

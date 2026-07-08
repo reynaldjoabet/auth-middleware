@@ -9,7 +9,8 @@ import scala.concurrent.duration.FiniteDuration
 
 import auth.dpop.DpopNonceValidator
 import auth.revocation.TokenIntrospection
-import auth.{AuthConfig, HttpsUriNoFragment, IssuerUri, NonBlank}
+import auth.accesstoken.AccessTokenConfig
+import auth.{HttpsUriNoFragment, IssuerUri, NonBlank}
 import com.comcast.ip4s.{Host, Port}
 import app.config.given
 import io.github.iltotore.iron.constraint.all.*
@@ -58,8 +59,8 @@ final case class AuthSettings(
     dpop: DpopSettings,
     introspection: IntrospectionSettings
 ) derives ConfigReader {
-  def toAuthConfig: AuthConfig =
-    AuthConfig(issuer, audience, URI.create(jwksUri))
+  def toAccessTokenConfig: AccessTokenConfig =
+    AccessTokenConfig(issuer, audience, URI.create(jwksUri))
 }
 
 /** RFC 9449 DPoP sender-constrained tokens. When enabled, the middleware

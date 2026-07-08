@@ -4,7 +4,7 @@ an access token represents delegated access to a protected resource. RFC 6749 de
 
 Your backend API only ever receives access tokens, so the middleware validates exactly that: RFC 9068 JWT access tokens, plus the OAuth-family extensions (RFC 6750 Bearer, RFC 9449 DPoP, RFC 8705 mTLS, RFC 9470 step-up).
 
-It actively defends against ID tokens. An ID token is also a signed JWT from the same issuer, so a naive validator would accept one sent to the API ("ID-token replay"). Restricting `acceptedTokenTypes` to `at+jwt` in `AuthConfig.scala` makes that structurally impossible — ID tokens have `typ: JWT`. The default also accepts plain JWT for issuers that don't emit `at+jwt` yet, so tighten it if yours does 
+It actively defends against ID tokens. An ID token is also a signed JWT from the same issuer, so a naive validator would accept one sent to the API ("ID-token replay"). Restricting `acceptedTokenTypes` to `at+jwt` in `AccessTokenConfig.scala` makes that structurally impossible — ID tokens have `typ: JWT`. The default also accepts plain JWT for issuers that don't emit `at+jwt` yet, so tighten it if yours does 
 
 `"OAuth is authorization, not authentication" describes the protocol's purpose between user, client, and authorization server — not what happens at your API`
 
@@ -873,3 +873,526 @@ With the `nonce` store, uniqueness is the server's job. The server mints each `n
 Strict single-use nonces have a real operational wrinkle that `jti` doesn't: each `nonce` is good for exactly one request. If a client fires several concurrent requests, they all carry the one `nonce` it currently holds — the first to be validated consumes `N`, and the others find `N` gone and get re-challenged. So the client must obtain multiple nonces (or serialize its requests).
 
 With `jti`-anchored single-use there's no such friction: each concurrent request just carries its own distinct `jti`, and they're independent. That concurrency-friendliness is a big part of why `jti`-anchoring is the usual default — the `nonce` carries only freshness, and the client is free to pipeline requests, each with its own `jti`. 
+
+
+## AEAD
+package com.nimbusds.jose.mint;
+package com.nimbusds.jose.mint;
+package com.nimbusds.jose.mint;
+Authenticated Encryption with Associated Data (AEAD) is a form of encryption which simultaneously provides confidentiality, integrity, and authenticity assurances on the data. It ensures that the data cannot be read or modified by unauthorized parties, and that any tampering can be detected.
+
+AEAD = Authenticated Encryption with Associated Data. It's a cipher that does two jobs atomically: encrypts the plaintext, and computes an authentication tag over both the ciphertext and some extra non-encrypted data (the AAD). On decryption, if a single bit of ciphertext, IV, or AAD was tampered with, the tag check fails and you get nothing — no partial plaintext
+
+JWE (encryption) gives you confidentiality plus integrity, always via a two-layer design: a key management algorithm (`alg` header: RSA-OAEP, ECDH-ES, A128KW, dir, PBES2…) establishes a one-time Content Encryption Key (CEK), and a content encryption method (`enc` header: A256GCM, A128CBC-HS256, XC20P) uses that CEK to AEAD-encrypt the actual payload. This hybrid design exists because asymmetric crypto is slow and size-limited, so you only ever asymmetrically protect a small symmetric key
+
+
+
+```java
+
+package com.nimbusds.jose.crypto.impl;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+
+import com.nimbusds.jose.JWEHeader;
+import com.nimbusds.jose.util.Base64URL;
+import com.nimbusds.jose.util.ByteUtils;
+import com.nimbusds.jose.util.IntegerOverflowException;
+
+
+/**
+ * Additional authenticated data (AAD).
+ *
+ * <p>See RFC 7518 (JWA), section 5.1, point 14.
+ *
+ */
+public class AAD {
+
+
+	/**
+	 * Computes the Additional Authenticated Data (AAD) for the specified
+	 * JWE header.
+	 *
+	 * @param jweHeader The JWE header. Must not be {@code null}.
+	 *
+	 * @return The AAD.
+	 */
+	public static byte[] compute(final JWEHeader jweHeader) {
+
+		return compute(jweHeader.toBase64URL());
+	}
+
+
+	/**
+	 * Computes the Additional Authenticated Data (AAD) for the specified
+	 * BASE64URL-encoded JWE header.
+	 *
+	 * @param encodedJWEHeader The BASE64URL-encoded JWE header. Must not
+	 *                         be {@code null}.
+	 *
+	 * @return The AAD.
+	 */
+	public static byte[] compute(final Base64URL encodedJWEHeader) {
+
+		return encodedJWEHeader.toString().getBytes(StandardCharsets.US_ASCII);
+	}
+
+
+	/**
+	 * Computes the bit length of the specified Additional Authenticated
+	 * Data (AAD). Used in AES/CBC/PKCS5Padding/HMAC-SHA2 encryption.
+	 *
+	 * @param aad The Additional Authenticated Data (AAD). Must not be
+	 *            {@code null}.
+	 *
+	 * @return The computed AAD bit length, as a 64 bit big-endian
+	 *         representation (8 byte array).
+	 *
+	 * @throws IntegerOverflowException On a integer overflow.
+	 */
+	public static byte[] computeLength(final byte[] aad)
+		throws IntegerOverflowException {
+
+		final int bitLength = ByteUtils.safeBitLength(aad);
+		return ByteBuffer.allocate(8).putLong(bitLength).array();
+	}
+}
+
+```
+
+In JWE, the AAD is the base64url-encoded protected header (computed in `AAD.java`, wired in at `ContentCryptoProvider.java:207`). That means the header — which declares the algorithms — is cryptographically bound to the ciphertext. An attacker can't swap A256GCM for something weaker in transit, because changing the header invalidates the tag.
+
+```java
+if (aad == null) {
+			// The AAD is the JWE header
+			return encrypt(header, clearText, AAD.compute(header), cek, encryptedKey, jcaProvider);
+		}
+```
+
+A JWE (JSON Web Encryption) object in compact form is five base64url strings joined by dots:
+```sh
+BASE64URL(header) . BASE64URL(encryptedKey) . BASE64URL(iv) . BASE64URL(ciphertext) . BASE64URL(authTag)
+```
+```java
+return new JWECryptoParts(
+    header,
+    encryptedKey,
+    Base64URL.encode(iv),
+    Base64URL.encode(authCipherText.getCipherText()),
+    Base64URL.encode(authCipherText.getAuthenticationTag()));
+```
+
+JWE always uses two layers of encryption.
+
+- The `alg` layer (key management) — RSA-OAEP, ECDH-ES, A128KW, dir, PBES2 — exists only to get a one-time symmetric key, the CEK (Content Encryption Key), safely to the recipient.
+- The `enc` layer (content encryption) — A256GCM, A128CBC-HS256, XC20P — uses that CEK to AEAD-encrypt your actual payload.
+
+The `alg` layer is handled by the encrypter classes (e.g. RSAEncrypter). All of them then hand off to one shared class for the enc layer: `ContentCryptoProvider.java`.
+
+
+### Header
+The header is a JSON object declaring how everything else must be interpreted:
+`{"alg":"RSA-OAEP","enc":"A256GCM"}`
+
+It is not encrypted — anyone can read it. But it is authenticated, and this is the single most important design decision in JWE
+
+```sh
+if (aad == null) {
+    // The AAD is the JWE header
+    return encrypt(header, clearText, AAD.compute(header), cek, encryptedKey, jcaProvider);
+}
+```
+AAD is data the cipher does not encrypt but does fold into the authentication tag (part 5). So the header travels in plaintext, yet if an attacker changes even one character of it — say, downgrading `"enc":"A256GCM"` to something weaker, or tampering with alg — the tag check at decryption fails and the recipient gets a hard error instead of plaintext. The header is cryptographically welded to the ciphertext.
+
+### Cek (content encryption key)
+The CEK is a one-time symmetric key used to encrypt the payload. It is generated by the encrypter and then protected by the `alg` layer so the recipient can recover it.
+alg:
+- RSA-OAEP: the encrypter calls generateCEK to draw a fresh random CEK from SecureRandom, then RSA-encrypts it with the recipient's public key. This part = the RSA ciphertext of the CEK.
+- A128KW (shared symmetric key): random CEK, wrapped with AES Key Wrap. This part = the wrapped key.
+- dir: the shared secret is the CEK. This part is empty — the token has a blank second segment (header..iv.ciphertext.tag).
+- ECDH-ES: the CEK is derived on both sides from the DH agreement + Concat KDF. Also empty; the recipient instead needs the epk (ephemeral public key) from the header to re-derive it.
+
+### The IV (initialisation vector)
+A fresh random value per message that makes encryption non-deterministic — without it, encrypting the same payload twice with the same key yields identical ciphertext, leaking that fact to observers (and in GCM's case, IV reuse is fully catastrophic: it breaks both confidentiality and the ability to forge tags).
+
+### The ciphertext
+The actual encrypted payload.
+- A128/192/256CBC-HS: AESCBC.encryptAuthenticated — splits the CEK into MAC-half + AES-half, CBC-encrypts, then HMACs AAD || IV || ciphertext || AAD-length.
+- A128/192/256GCM: AESGCM.encrypt — AES-CTR keystream encryption with GHASH authentication in one pass; note cipher.updateAAD(authData) at line 129 is where our header-bytes-as-AAD get fed in.
+- XC20P: XC20P.encryptAuthenticated via Tink's XChaCha20-Poly1305.
+
+All three return the same shape: an `AuthenticatedCipherText` — a (ciphertext, authTag) pair.
+
+### The authentication tag
+The AEAD's output MAC — a short value (128 bits for GCM/XC20P; half the HMAC output for the CBC composites) computed over the AAD (= the header), the IV, and the ciphertext together. It's the integrity seal for the entire token: header tampering, ciphertext bit-flips, IV swaps — all invalidate it.
+
+- `enc + CEK` → the payload. The CEK is the symmetric key for A256GCM / A128CBC-HS256 / XC20P. It encrypts the content and produces the auth tag. Its required size is dictated by `enc (enc.cekBitLength())`: 256 bits for A256GCM, 512 for A256CBC-HS512 (because CompositeKey splits it in half — HMAC key + AES key).
+- `alg` → the CEK itself, never the payload. RSA-OAEP, A128KW, ECDH-ES etc. only encrypt/wrap/derive that one small key. The payload never touches the alg algorithm.
+
+
+And on the other side, the same symmetry: the decrypter first uses `alg + your private/shared key` to recover the CEK (e.g. `RSADecrypter.java:358-365`), then hands that CEK to `ContentCryptoProvider.decrypt`, which uses it with the `enc` cipher to verify the tag and decrypt the ciphertext.
+
+### The core idea: a keyed checksum
+Forget encryption for a second. Suppose I send you a message and I want you to be able to detect if anyone modified it in transit. A plain checksum (CRC, SHA-256) doesn't work — an attacker who changes the message can just recompute the checksum, since hashing needs no secret.
+
+The fix: compute the checksum with a secret key that only you and I know:
+
+`tag = MAC(key, message)`
+
+```java
+/**
+ * Composite key used in AES/CBC/PKCS5Padding/HMAC-SHA2 encryption. This class
+ * is immutable.
+ *
+ * <p>See RFC 7518 (JWA), section 5.2.
+ *
+ * <p>See draft-mcgrew-aead-aes-cbc-hmac-sha2-01
+ *
+ * @author Vladimir Dzhuvinov
+ * @version 2015-06-29
+ */
+@Immutable
+public final class CompositeKey {
+
+
+	/**
+	 * The input key.
+	 */
+	private final SecretKey inputKey;
+
+
+	/**
+	 * The extracted MAC key.
+	 */
+	private final SecretKey macKey;
+
+
+	/**
+	 * The extracted AES key.
+	 */
+	private final SecretKey encKey;
+
+
+	/**
+	 * The expected truncated MAC output length.
+	 */
+	private final int truncatedMacLength;
+
+
+	/**
+	 * Creates a new composite key from the specified secret key.
+	 *
+	 * @param inputKey The input key. Must be 256, 384 or 512 bits long.
+	 *                 Must not be {@code null}.
+	 *
+	 * @throws KeyLengthException If the input key length is not supported.
+	 */
+	public CompositeKey(final SecretKey inputKey)
+		throws KeyLengthException {
+
+		this.inputKey = inputKey;
+
+		byte[] secretKeyBytes = inputKey.getEncoded();
+
+		if (secretKeyBytes.length == 32) {
+
+			// AES_128_CBC_HMAC_SHA_256
+			// 256 bit key -> 128 bit MAC key + 128 bit AES key
+			macKey = new SecretKeySpec(secretKeyBytes, 0, 16, "HMACSHA256");
+			encKey = new SecretKeySpec(secretKeyBytes, 16, 16, "AES");
+			truncatedMacLength = 16;
+
+		} else if (secretKeyBytes.length == 48) {
+
+			// AES_192_CBC_HMAC_SHA_384
+			// 384 bit key -> 129 bit MAC key + 192 bit AES key
+			macKey = new SecretKeySpec(secretKeyBytes, 0, 24, "HMACSHA384");
+			encKey = new SecretKeySpec(secretKeyBytes, 24, 24, "AES");
+			truncatedMacLength = 24;
+
+
+		} else if (secretKeyBytes.length == 64) {
+
+			// AES_256_CBC_HMAC_SHA_512
+			// 512 bit key -> 256 bit MAC key + 256 bit AES key
+			macKey = new SecretKeySpec(secretKeyBytes, 0, 32, "HMACSHA512");
+			encKey = new SecretKeySpec(secretKeyBytes, 32, 32, "AES");
+			truncatedMacLength = 32;
+
+		} else {
+
+			throw new KeyLengthException("Unsupported AES/CBC/PKCS5Padding/HMAC-SHA2 key length, must be 256, 384 or 512 bits");
+		}
+	}
+
+
+	/**
+	 * Gets the input key.
+	 *
+	 * @return The input key.
+	 */
+	public SecretKey getInputKey() {
+
+		return inputKey;
+	}
+
+
+	/**
+	 * Gets the extracted MAC key.
+	 *
+	 * @return The extracted MAC key.
+	 */
+	public SecretKey getMACKey() {
+
+		return macKey;
+	}
+
+
+	/**
+	 * Gets the expected truncated MAC length.
+	 *
+	 * @return The expected truncated MAC length, in bytes.
+	 */
+	public int getTruncatedMACByteLength() {
+
+		return truncatedMacLength;
+	}
+
+
+	/**
+	 * Gets the extracted encryption key.
+	 *
+	 * @return The extracted encryption key.
+	 */
+	public SecretKey getAESKey() {
+
+		return encKey;
+	}
+}```
+
+```java
+	public static AuthenticatedCipherText encryptAuthenticated(final SecretKey secretKey,
+								   final byte[] iv,
+								   final byte[] plainText,
+								   final byte[] aad,
+								   final Provider ceProvider,
+								   final Provider macProvider)
+		throws JOSEException {
+
+		// Extract MAC + AES/CBC keys from input secret key
+		CompositeKey compositeKey = new CompositeKey(secretKey);
+
+		// Encrypt plain text
+		byte[] cipherText = encrypt(compositeKey.getAESKey(), iv, plainText, ceProvider);
+
+		// AAD length to 8 byte array
+		byte[] al = AAD.computeLength(aad);
+
+		// Do MAC
+		int hmacInputLength = aad.length + iv.length + cipherText.length + al.length;
+		byte[] hmacInput = ByteBuffer.allocate(hmacInputLength).put(aad).put(iv).put(cipherText).put(al).array();
+		byte[] hmac = HMAC.compute(compositeKey.getMACKey(), hmacInput, macProvider);
+		byte[] authTag = Arrays.copyOf(hmac, compositeKey.getTruncatedMACByteLength());
+
+		return new AuthenticatedCipherText(cipherText, authTag);
+	}
+```
+
+### Authentication Tag because it authenticates the message
+
+In cryptography, message authentication means answering two questions about a received message:
+- Origin: did this really come from someone holding the secret key? (data-origin authenticity)
+- Integrity: is it byte-for-byte what they produced? (nobody modified it)
+
+A valid tag answers yes to both simultaneously 
+
+that's the same "authentication" as in MAC — Message Authentication Code — which is literally what the tag is: in the CBC-HS modes it's an HMAC output
+
+
+Verifying a JWT's `HS256` MAC or `RS256` signature answers exactly the same question the AEAD tag answers: was this artifact produced by someone holding the trusted key (the authorization server), and is it byte-for-byte unaltered? 
+
+### Split one key into two
+```sh
+256-bit CEK:  [ first 16 bytes = HMAC-SHA-256 key ][ last 16 bytes = AES-128 key ]
+```
+### Encrypt first
+
+`byte[] cipherText = encrypt(compositeKey.getAESKey(), iv, plainText, ceProvider);`
+
+Plain AES/CBC/PKCS5Padding under the AES half, with the 16-byte random IV passed in from ContentCryptoProvider. At this point the output is confidential but malleable — anyone can flip ciphertext bits and predictably flip plaintext bits. Everything after this line exists to fix that.
+
+The ordering is the deliberate part: this is encrypt-then-MAC — the MAC is computed over the ciphertext, not the plaintext. Of the three possible orderings (`MAC-then-encrypt`, `encrypt-and-MAC`, `encrypt-then-MAC`), only `encrypt-then-MAC` is generically secure: the verifier can check integrity without decrypting anything, which is what makes padding-oracle attacks structurally impossible — invalid ciphertext is rejected before the CBC padding code ever runs.
+
+### enc is used in two paces
+one `enc` algorithm, two jobs. That's the definition of an AEAD: it produces the ciphertext and the tag as one operation.
+
+For `A128CBC-HS256` you can see the two jobs as two literal code steps in `encryptAuthenticated`, each with its own half of the CEK:
+```sh
+// Job 1 — confidentiality (AES half of the CEK)
+byte[] cipherText = encrypt(compositeKey.getAESKey(), iv, plainText, ceProvider);
+
+// Job 2 — integrity/authenticity (MAC half of the CEK)
+byte[] hmac = HMAC.compute(compositeKey.getMACKey(), hmacInput, macProvider);
+```
+
+Message authentication is a procedure to verify that received messages are authentic. The two important aspects are verifying that the contents of the message have not been altered (integrity) and that the source is authentic (source/data-origin authenticity).
+
+"Data-origin authentication is the security service that enables entities to verify that a message has been originated by a particular entity and that it has not been altered afterwards. Therefore, in contrast to the data integrity service, data origin authentication necessarily involves identifying the source of a message."
+
+"A message authentication code (MAC) provides a guarantee of both origin and integrity. If the verification algorithm accepts, the receiver is assured that the message was indeed sent by the party sharing the secret key, and that it was not modified in transit."
+
+"Without data origin, integrity is meaningless. If you receive a perfectly intact, byte-for-byte unmodified malicious payload, the fact that it has integrity doesn't save you if you don't know it came from an adversary rather than your trusted partner."
+
+
+Message authentication or data origin authentication is an information security property that indicates that a message has not been modified while in transit (data integrity) and that the receiving party can verify the source of the message. Message authentication does not necessarily include the property of non-repudiation.
+
+
+Message authentication is typically achieved by using `message authentication codes` (MACs), `authenticated encryption` (AE), or `digital signatures`. The message authentication code, also known as digital authenticator, is used as an integrity check based on a secret key shared by two parties to authenticate information transmitted between them. It is based on using a cryptographic hash or symmetric encryption algorithm. The authentication key is only shared by exactly two parties (e.g. communicating devices), and the authentication will fail in the existence of a third party possessing the key since the algorithm will no longer be able to detect forgeries (i.e. to be able to validate the unique source of the message).In addition, the key must also be randomly generated to avoid its recovery through brute-force searches and related-key attacks designed to identify it from the messages transiting the medium
+
+Authenticated encryption (AE) is any encryption scheme which simultaneously assures the data confidentiality (also known as privacy: the encrypted message is impossible to understand without the knowledge of a secret key) and authenticity (in other words, it is unforgeable: the encrypted message includes an authentication tag that the sender can calculate only while possessing the secret key). Examples of encryption modes that provide AE are `GCM`, `CCM`.
+
+
+Many (but not all) AE schemes allow the message to contain "associated data" (AD) which is not made confidential, but is integrity protected (i.e., readable, but tamperevident). A typical example is the header of a network packet that contains its destination address. To properly route the packet, all intermediate nodes in the message path need to know the destination, but for security reasons they cannot possess the secret key. Schemes that allow associated data provide authenticated encryption with associated data, or AEAD
+
+
+A typical programming interface for an AE implementation provides the following functions:
+- Encryption
+    - Input: plaintext, key, and optionally a header (also known as additional authenticated data, AAD, or associated data, AD) in plaintext that will not be encrypted, but will be covered by authenticity protection.
+    - Output: ciphertext and authentication tag (message authentication code or MAC).
+- Decryption
+    - Input: ciphertext, key, authentication tag, and optionally a header (if used during the encryption).
+    - Output: plaintext, or an error if the authentication tag does not match the supplied ciphertext or header.
+
+The header part is intended to provide authenticity and integrity protection for networking or storage metadata for which confidentiality is unnecessary, but authenticity is desired.
+
+The text names three ways to get message authentication. All three exist in this library:
+
+| Mechanism | Key type | In this repo | Extra property |
+|---|---|---|---|
+| MAC | shared symmetric | MACSigner/MACVerifier (HS256 JWS) | — |
+| Authenticated encryption | shared symmetric | AESGCM, AESCBC (JWE enc) | + confidentiality |
+| Digital signature | asymmetric pair | RSASSASigner, ECDSASigner, Ed25519Signer (RS/ES/EdDSA JWS) | + non-repudiation |
+
+Authenticated encryption: why "encrypted" doesn't imply "protected"
+
+AE closes this: the tag is computed over the ciphertext under the secret key, so the flipped byte no longer matches the tag and decryption returns an error instead of the doctored plaintext. Only key-holders can produce a (ciphertext, tag) pair that will be accepted, which is why AE gives you message authentication and confidentiality in one primitive. GCM and CCM are the canonical examples (TLS 1.3 ciphersuites are exclusively AEAD: AES-GCM and ChaCha20-Poly1305)
+
+
+### Associated data: the AEAD refinement
+The network-packet example in your text is the classic motivation: routers must read the destination address to route the packet, so it can't be encrypted — but if it's not authenticated, an attacker can redirect the packet by rewriting it. AD is the middle category: readable, but tamper-evident.
+
+More examples of the same pattern:
+- JWE — the protected header ({"alg":...,"enc":...}) must be readable before decryption (it tells you how to decrypt) but must not be forgeable. So it's the AAD
+- Database field encryption: encrypt the ssn column with the row's primary key + column name as AD. Without it, an attacker with DB write access can swap the encrypted SSN from Alice's row into Bob's row — both are valid ciphertexts under the same key! With AD, each ciphertext is welded to its row, and the swap fails the tag check. This "ciphertext splicing" attack is the AD use case people most often forget
+
+The unifying idea: AD binds a ciphertext to its context — the metadata saying where/how/for-whom it's valid — so a perfectly valid ciphertext can't be replayed into a different context.
+
+AE without associated data is perfectly coherent, and historically it came first. The original formalization of authenticated encryption (late 1990s) had no AD at all: input plaintext + key, output ciphertext + tag, and the tag covers only the ciphertext. Rogaway added the AD notion in 2002 precisely because real protocols kept hitting the same wall. Modern schemes make AD optional-and-empty rather than absent: calling GCM with a zero-length AAD is plain AE — in this codebase nothing stops you from passing new byte[0] as the authData parameter of `AESGCM.encrypt`; 
+
+```java
+int hmacInputLength = aad.length + iv.length + cipherText.length + al.length;
+		byte[] hmacInput = ByteBuffer.allocate(hmacInputLength).put(aad).put(iv).put(cipherText).put(al).array();
+		byte[] hmac = HMAC.compute(compositeKey.getMACKey(), hmacInput, macProvider);
+```
+- So AD adds exactly three things
+Authenticity for data that must stay readable. The "readable but tamper-evident" middle category — headers, addresses, algorithm identifiers. Without AD this category simply can't exist inside one primitive.
+
+- Atomic binding of message to context. Not just "header is authentic" + "body is authentic," but "this header goes with this body." That's what kills splicing, swapping, and downgrade attacks. In JWE terms: without the header-as-AAD trick, an attacker could take your valid A256GCM token and rewrite the header — the enc layer wouldn't notice, since it only tagged the ciphertext.
+
+- Authenticated data that's never transmitted at all. The most elegant use: the AD can be implicit — a value both sides already know. A disk encryptor uses the sector number as AD; a database uses the row ID; a protocol uses the message sequence number. Zero bytes added to the wire/disk, yet the ciphertext becomes valid only in that exact position.
+
+## Approaches to Authenticated Encryption
+### Encrypt-then-MAC (EtM)
+![alt text](image-1.png)
+The MAC's input is the ciphertext. Two consequences, both decisive:
+- The receiver verifies before decrypting. The tag check needs only the ciphertext — which just arrived — so a forgery is rejected without the decryption machinery ever running on it. The cipher, its padding logic, its parsing — none of it touches attacker-controlled data until that data has already proven it came from a key-holder. 
+- The MAC never sees plaintext, so it can't leak anything about it (more on this under E&M).
+
+This is exactly what you saw in AESCBC.java: encrypt at line 193, then MAC over `AAD ‖ IV ‖ ciphertext ‖ AL` at line 201 — and on decryption, the constant-time tag check at line 354 gates the decrypt() call at line 358. Bellare and Namprempre proved (2000) that EtM is the only one of the three that is generically secure 
+### Encrypt-and-MAC (E&M)
+![alt text](image-2.png)
+
+### MAC-then-Encrypt (MtE)
+![alt text](image-3.png)
+
+The tag is inside the encryption. Elegant-looking — the tag is even confidential now — but it forces the fatal ordering: the receiver cannot see the MAC until after decrypting. Decryption of hostile input is now mandatory, and everything decryption does before the MAC check becomes observable attacker feedback
+
+` authenticate what you received (the ciphertext), not what you'll compute (the plaintext) — because the moment decryption runs before authentication, decryption's behavior on garbage becomes an oracle, and oracles get exploited`
+
+`tag = MAC(key, plaintext)     ← plaintext is the input`
+The tag authenticates the plaintext — plaintext is what got fed into the MAC, so the tag vouches for it.
+
+`tag = MAC(key, aad ‖ iv ‖ ciphertext ‖ al)     ← ciphertext is the input`
+Here the tag authenticates the ciphertext (and the AAD, and the IV) 
+
+Everything in cryptography that carries the label is a variation on verifying authorship, differing only in what is being authenticated:
+
+1. Message / data-origin authentication — the author of a piece of data.
+"Did this message come from the claimed sender, unmodified?" (Unmodified is part of it, because a message altered by Mallory is no longer authored by Alice — modification is a change of authorship for the altered bytes.) Mechanisms: MACs, authentication tags, digital signatures.
+
+- Entity authentication — the identity of a live party.
+
+- Key authentication — the ownership of a key.
+
+"Message authentication code" → a code whose verification establishes authorship.
+"Authenticated encryption" → encryption whose output carries a verifiable claim of authorship.
+"Authenticating an access token" → verifying the token was authored by the trusted issuer.
+
+```sh
+signingInput = base64url(header) + "." + base64url(claims)
+signature    = Sign(issuerPrivateKey, signingInput)          ← e.g. RS256, ES256
+token = signingInput + "." + base64url(signature)
+```
+
+
+
+Why the ordering matters (authorship strictly first): claims live inside the signed payload. Reading aud before verifying the signature means making decisions on attacker-writable data. So the rule the pipeline enforces is: no claim is meaningful until the signature over it has passed — and conversely, a passed signature makes the claims trustworthy, not yet acceptable.
+
+
+```java
+
+/**
+ * Encrypted JSON Web Token (JWT). This class is thread-safe.
+ *
+ */
+@ThreadSafe
+public class EncryptedJWT extends JWEObject implements JWT {}
+
+
+/**
+ * Unsecured (plain) JSON Web Token (JWT).
+ *
+ */
+@ThreadSafe
+public class PlainJWT extends PlainObject implements JWT {}
+
+/**
+ * Signed JSON Web Token (JWT).
+ *
+ */
+@ThreadSafe
+public class SignedJWT extends JWSObject implements JWT {}
+```
+
+A {@link DefaultJWTClaimsVerifier default JWT claims verifier} is provided, to perform a minimal check of the claims after a successful JWS verification / JWE decryption. It checks the token expiration (exp) and not-before (nbf) timestamps if these are present. The default JWT claims verifier may be extended to perform additional checks, such as issuer and subject acceptance.
+
+- `exactMatchClaims`: Specific claim names and their expected values. The token must contain these claims, and their values must exactly match the values provided here. In AccessTokenValidator.scala, this is used to enforce config.issuer — the token's iss claim must be exactly the string configured in config.issuer.
+- `requiredClaims`: A set of claim names (keys) that must be present in the token. The verifier checks that the token contains these claims, but doesn't check their specific values against this set
+
+```java
+// requiredClaims: presence only — line 308
+if (! claimsSet.getClaims().keySet().containsAll(requiredClaims)) {
+    throw new BadJWTException("JWT missing required claims: " + missingClaims);
+}
+
+// exactMatchClaims: value equality — lines 326-332
+for (String exactMatch: exactMatchClaims.getClaims().keySet()) {
+    Object actualClaim = claimsSet.getClaim(exactMatch);
+    Object expectedClaim = exactMatchClaims.getClaim(exactMatch);
+    if (! Objects.equals(expectedClaim, actualClaim)) {
+        throw new BadJWTException("JWT " + exactMatch + " claim value rejected");
+    }
+}
+```
+
+HTTP Authorization scheme — the literal first token in `Authorization: <scheme> <token>.` Only two exist here: Bearer (RFC 6750) and DPoP (RFC 9449). These are registered HTTP auth schemes

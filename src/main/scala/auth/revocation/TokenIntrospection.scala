@@ -27,8 +27,8 @@ import org.http4s.{BasicCredentials, Method, Request, Uri, UrlForm}
   * and Duende's guidance:
   *   - a network hop per (uncached) check — gate it on the sensitive route
   *     groups rather than the whole API if latency matters; construct one
-  *     [[JwtValidator]] with introspection for those routes and one without for
-  *     the rest
+  *     [[AccessTokenValidator]] with introspection for those routes and one
+  *     without for the rest
   *   - failures are reported as [[Result.Unavailable]] and the validator fails
   *     closed (503, `Retry-After`) — a token we cannot prove active is not
   *     accepted

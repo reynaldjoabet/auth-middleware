@@ -2,7 +2,8 @@ package app.http
 
 import auth.dpop.{DpopConfig, DpopNonceValidator, DpopVerifier}
 import auth.revocation.{TokenDenylist, TokenIntrospection}
-import auth.{AuthEvents, BearerAuth, JwtValidator}
+import auth.accesstoken.AccessTokenValidator
+import auth.{AuthEvents, AccessTokenAuth}
 import cats.effect.{Async, Resource}
 import cats.syntax.all.*
 import fs2.io.net.Network
@@ -55,8 +56,13 @@ object Server {
       }
 
       validator <- Resource.eval(
-        JwtValidator
-          .remote[F](cfg.auth.toAuthConfig, events, denylist, introspection)
+        AccessTokenValidator
+          .default[F](
+            cfg.auth.toAccessTokenConfig,
+            events,
+            denylist,
+            introspection
+          )
       )
 
       // Stateless (Duende-pattern) nonces: multi-node with a shared key, no
@@ -108,7 +114,7 @@ object Server {
             .map(Some(_))
         else Resource.pure[F, Option[DpopVerifier[F]]](None)
 
-      authMw = BearerAuth.middleware[F](validator, events, dpop = dpop)
+      authMw = AccessTokenAuth.middleware[F](validator, events, dpop = dpop)
       httpApp = HttpApi.httpApp[F](ds, authMw)
       server <- EmberServerBuilder
         .default[F]

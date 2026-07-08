@@ -8,8 +8,8 @@ import cats.Applicative
   * support immediate token revocation (account compromise, employee
   * offboarding, fraud holds) without waiting for the token to expire.
   *
-  * Keep `jti` in [[AuthConfig.requiredClaims]] (the default does) so tokens
-  * cannot dodge the check by omitting it.
+  * Keep `jti` in [[AccessTokenConfig.requiredClaims]] (the default does) so
+  * tokens cannot dodge the check by omitting it.
   */
 trait TokenDenylist[F[_]] {
   def isRevoked(tokenId: String): F[Boolean]

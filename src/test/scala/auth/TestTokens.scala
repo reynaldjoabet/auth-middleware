@@ -1,4 +1,6 @@
 package auth
+
+import auth.accesstoken.*
 import auth.dpop.DpopVerifier
 
 import java.net.URI
@@ -19,7 +21,7 @@ object TestTokens {
   val issuer = "https://auth.test.example"
   val audience = "https://api.test.example"
 
-  val config: AuthConfig = AuthConfig(
+  val config: AccessTokenConfig = AccessTokenConfig(
     issuer = issuer,
     audience = audience,
     jwksUri = URI.create("https://auth.test.example/.well-known/jwks.json")

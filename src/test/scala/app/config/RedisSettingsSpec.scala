@@ -21,7 +21,9 @@ class RedisSettingsSpec extends FunSuite {
       pingTimeout = 1.second
     )
 
-  test("rejects an empty node list at construction (every entrypoint needs Redis)") {
+  test(
+    "rejects an empty node list at construction (every entrypoint needs Redis)"
+  ) {
     intercept[IllegalArgumentException](settings(Nil))
   }
 

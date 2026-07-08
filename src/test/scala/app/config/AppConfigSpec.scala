@@ -66,7 +66,7 @@ class AppConfigSpec extends FunSuite {
 
   test("full config loads; nonce key decodes; disabled introspection is None") {
     val cfg = load(s"$dpopOn\n$introspectionOff")
-    val _ = cfg.auth.toAuthConfig // AuthConfig.require holds
+    val _ = cfg.auth.toAccessTokenConfig // AccessTokenConfig.require holds
     assert(cfg.auth.dpop.enabled)
     assert(cfg.auth.dpop.nonce.decodedKey.isDefined)
     assertEquals(cfg.auth.dpop.nonce.decodedPreviousKeys, Nil)

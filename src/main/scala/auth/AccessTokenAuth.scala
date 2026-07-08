@@ -17,7 +17,9 @@ import org.http4s.{
   Status
 }
 import org.typelevel.ci.*
+import auth.accesstoken.AccessTokenValidator
 import auth.dpop.DpopVerifier
+import auth.mtls.{ClientCertificates, Mtls}
 import auth.given
 
 /** http4s middleware enforcing OAuth 2.0 access-token authentication for
@@ -26,7 +28,7 @@ import auth.given
   * Specs enforced:
   *   - RFC 6750 — `Bearer` scheme, `WWW-Authenticate` challenges and error
   *     codes
-  *   - RFC 9068 — JWT access-token validation (via [[JwtValidator]])
+  *   - RFC 9068 — JWT access-token validation (via [[AccessTokenValidator]])
   *   - RFC 9449 — DPoP sender-constrained tokens: `Authorization: DPoP …` plus
   *     a `DPoP` proof header, bound through the token's `cnf.jkt` claim
   *   - RFC 8705 — mutual-TLS certificate-bound tokens via `cnf.x5t#S256`
@@ -55,7 +57,7 @@ import auth.given
   * error messages. The one dynamic value is the `DPoP-Nonce` header: a
   * server-minted random nonce (RFC 9449 §8), never derived from token material.
   */
-object BearerAuth {
+object AccessTokenAuth {
 
   private val DpopScheme: AuthScheme = ci"DPoP"
 
@@ -74,7 +76,7 @@ object BearerAuth {
     *   enables mTLS certificate-bound token checks when set
     */
   def middleware[F[_]: Monad](
-      validator: JwtValidator[F],
+      validator: AccessTokenValidator[F],
       events: AuthEvents[F],
       realm: String = "api",
       senderConstraint: SenderConstraintPolicy =
@@ -110,7 +112,7 @@ object BearerAuth {
               "DPoP scheme used but DPoP is not enabled"
             )
           )(
-            _.verify(req, token, jkt)
+            _.verifyBinding(req, token, jkt)
           )
         case (TokenScheme.Dpop, None) =>
           fail(
@@ -211,7 +213,7 @@ object BearerAuth {
     // keeps steady state at one round trip per call; rotating on failure hands
     // the client the nonce it needs to recover immediately — a proof rejected
     // after its nonce was consumed would otherwise cost two more round trips.
-    dpop.flatMap(_.nonces) match {
+    dpop.flatMap(_.dpopNonceValidator) match {
       case None            => base
       case Some(validator) =>
         routes =>

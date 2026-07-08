@@ -1,4 +1,5 @@
 package auth
+package dpop
 
 import auth.dpop.{DpopConfig, DpopVerifier}
 
@@ -174,7 +175,7 @@ class DpopVerifierSpec extends DpopBaseSuite {
   }
 
   test("rejects the DPoP scheme when DPoP is not enabled on the middleware") {
-    val plainApp = BearerAuth
+    val plainApp = AccessTokenAuth
       .middleware(validator, AuthEvents.noop[IO])
       .apply(routes)
       .orNotFound
@@ -243,7 +244,8 @@ class DpopVerifierSpec extends DpopBaseSuite {
   // -- Required proof claims: each must be present (RFC 9449 §4.2-4.3) --------
 
   /** Sign an arbitrary claims set as a dpop+jwt proof with the bound key, so a
-    * test can omit an individual required claim (which `dpopProof` always sets).
+    * test can omit an individual required claim (which `dpopProof` always
+    * sets).
     */
   private def signProof(claims: JWTClaimsSet): String = {
     val jwt = new SignedJWT(
@@ -257,7 +259,8 @@ class DpopVerifierSpec extends DpopBaseSuite {
     jwt.serialize()
   }
 
-  /** A proof over `token` that includes each required claim unless toggled off. */
+  /** A proof over `token` that includes each required claim unless toggled off.
+    */
   private def proofWith(
       token: String,
       jti: Boolean = true,
@@ -277,7 +280,9 @@ class DpopVerifierSpec extends DpopBaseSuite {
 
   private def assertProofRejected(mkProof: String => String): IO[Unit] = {
     val token = sign(dpopBoundClaims())
-    app().use(_.run(dpopRequest(token, mkProof(token))).flatMap(assertDpopRejected))
+    app().use(
+      _.run(dpopRequest(token, mkProof(token))).flatMap(assertDpopRejected)
+    )
   }
 
   test("rejects a proof with no jti") {
@@ -333,7 +338,7 @@ class DpopVerifierSpec extends DpopBaseSuite {
         singleUseChecker = checker
       )
       .map { verifier =>
-        BearerAuth
+        AccessTokenAuth
           .middleware(validator, AuthEvents.noop[IO], dpop = Some(verifier))
           .apply(routes)
           .orNotFound

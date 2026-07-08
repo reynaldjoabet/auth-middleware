@@ -1,6 +1,6 @@
 import Dependencies._
 
-scalaVersion := "3.8.3"
+scalaVersion := "3.8.4"
 version := "0.1.0-SNAPSHOT"
 scalacOptions ++= Seq(
   "-no-indent",

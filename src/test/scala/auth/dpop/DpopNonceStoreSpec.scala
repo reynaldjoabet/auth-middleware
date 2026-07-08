@@ -1,4 +1,5 @@
 package auth
+package dpop
 
 import org.http4s.Status
 

@@ -48,7 +48,11 @@ final case class RedisEndpoint(
   */
 final case class RedisSettings(
     mode: RedisMode,
-    nodes: List[RedisEndpoint],
+    // Every entrypoint needs Redis (revocation denylist, and the shared DPoP jti
+    // set behind a load balancer). Non-emptiness is a type-level invariant, so an
+    // empty `redis.nodes` fails at config decode instead of letting Sage silently
+    // fall back to a default localhost endpoint.
+    nodes: List[RedisEndpoint] :| MinLength[1],
     username: String,
     password: Option[String],
     database: Int :| Interval.Closed[0, 15],
@@ -59,17 +63,25 @@ final case class RedisSettings(
     pingTimeout: FiniteDuration
 ) derives ConfigReader {
 
-  // Every entrypoint needs Redis (revocation denylist, and the shared DPoP jti
-  // set behind a load balancer). Reject an empty node list at config load rather
-  // than letting Sage silently fall back to a default localhost endpoint.
-  require(nodes.nonEmpty, "redis.nodes must list at least one endpoint")
+  // Cross-field invariants that a single-field refinement can't express. These
+  // run during construction (and thus during ConfigReader decode), so a
+  // misconfiguration fails the boot with a clear message rather than surfacing
+  // as an opaque connection error later.
+  require(
+    mode != RedisMode.Standalone || nodes.sizeIs == 1,
+    "redis: standalone mode expects exactly one node in redis.nodes"
+  )
+  require(
+    mode != RedisMode.Cluster || database == 0,
+    "redis: cluster mode only supports database 0"
+  )
 
   def toSageConfig: SageConfig = {
     val seeds = nodes.map(_.toEndpoint).toVector
     val topology = mode match {
-      case RedisMode.Standalone =>
-        Topology.Standalone(seeds.headOption.getOrElse(Endpoint()))
-      case RedisMode.Cluster => Topology.Cluster(seeds)
+      // `seeds` is non-empty (MinLength[1]) and standalone is exactly one node.
+      case RedisMode.Standalone => Topology.Standalone(seeds.head)
+      case RedisMode.Cluster    => Topology.Cluster(seeds)
     }
     SageConfig(
       connectTimeout = connectTimeout,

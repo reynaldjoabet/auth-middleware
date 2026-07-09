@@ -1,8 +1,8 @@
 package app.config
 
 import scala.concurrent.duration.*
+import io.github.iltotore.iron.*
 
-import io.github.iltotore.iron.autoRefine
 import munit.FunSuite
 
 class RedisSettingsSpec extends FunSuite {
@@ -10,7 +10,7 @@ class RedisSettingsSpec extends FunSuite {
   private def settings(nodes: List[RedisEndpoint]): RedisSettings =
     RedisSettings(
       mode = RedisMode.Standalone,
-      nodes = nodes,
+      nodes = nodes.refineUnsafe,
       username = "user",
       password = None,
       database = 0,

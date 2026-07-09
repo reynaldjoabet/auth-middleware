@@ -1,5 +1,4 @@
 package auth
-package accesstoken
 
 import auth.accesstoken.*
 import auth.revocation.TokenDenylist
@@ -469,7 +468,7 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
     "requireAcr + requireFreshAuth: 401 with max_age when acr ok but authentication too old"
   ) {
     import scala.concurrent.duration.*
-    freshAcrApp(MaxAuthAge.applyUnsafe(300))
+    freshAcrApp(MaxAuthAge(300))
       .run(
         payment(sign(acrClaims(Some("urn:openbanking:psd2:sca"), 30.minutes)))
       )
@@ -485,7 +484,7 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
     "requireAcr + requireFreshAuth: 200 when acr ok and authentication recent"
   ) {
     import scala.concurrent.duration.*
-    freshAcrApp(MaxAuthAge.applyUnsafe(300))
+    freshAcrApp(MaxAuthAge(300))
       .run(payment(sign(acrClaims(Some("urn:openbanking:psd2:sca"), 1.minute))))
       .map(resp => assertEquals(resp.status, Status.Ok))
   }
@@ -494,26 +493,25 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
     "requireFreshAuth: admits a recently-authenticated user regardless of acr"
   ) {
     import scala.concurrent.duration.*
-    freshApp(MaxAuthAge.applyUnsafe(300))
+    freshApp(MaxAuthAge(300))
       .run(payment(sign(acrClaims(None, 1.minute))))
       .map(resp => assertEquals(resp.status, Status.Ok))
   }
 
   test("requireFreshAuth: 401 with max_age when the token has no auth_time") {
     import scala.concurrent.duration.*
-    freshApp(MaxAuthAge.applyUnsafe(300)).run(payment(sign(claims()))).map {
-      resp =>
-        assertEquals(resp.status, Status.Unauthorized)
-        val challenge =
-          resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
-        assert(challenge.contains("max_age=300"), challenge)
+    freshApp(MaxAuthAge(300)).run(payment(sign(claims()))).map { resp =>
+      assertEquals(resp.status, Status.Unauthorized)
+      val challenge =
+        resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
+      assert(challenge.contains("max_age=300"), challenge)
     }
   }
 
   test("requireFreshAuth: a custom realm appears in the challenge") {
     val app = authMiddleware(
       AccessTokenAuth.requireFreshAuth[IO](
-        MaxAuthAge.applyUnsafe(300),
+        MaxAuthAge(300),
         "bank"
       )(paymentRoutes)
     ).orNotFound
@@ -531,7 +529,7 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
   ) {
     import scala.concurrent.duration.*
     val app = authMiddleware(
-      AccessTokenAuth.requireFreshAuth[IO](MaxAuthAge.applyUnsafe(0))(
+      AccessTokenAuth.requireFreshAuth[IO](MaxAuthAge(0))(
         paymentRoutes
       )
     ).orNotFound
@@ -591,7 +589,7 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
   test("requireMfa: honors a custom mfaAcr and maxAge") {
     import scala.concurrent.duration.*
     val app = authMiddleware(
-      AccessTokenAuth.requireMfa[IO](Acr("loa3"), MaxAuthAge.applyUnsafe(60))(
+      AccessTokenAuth.requireMfa[IO](Acr("loa3"), MaxAuthAge(60))(
         paymentRoutes
       )
     ).orNotFound

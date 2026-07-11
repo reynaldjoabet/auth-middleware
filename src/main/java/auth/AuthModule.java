@@ -48,6 +48,9 @@ public class AuthModule extends AbstractModule {
                 OAuthConfig.DEFAULT_DPOP_CLOCK_SKEW_SECONDS,
                 OAuthConfig.DEFAULT_PROOF_MAX_LENGTH,
                 auth.getDuration("dpop.nonce.lifetime").toSeconds(),
+                // Same posture as the Scala stack: when DPoP + nonces are
+                // enabled, every proof must carry a server-issued nonce.
+                auth.getBoolean("dpop.enabled") && auth.getBoolean("dpop.nonce.enabled"),
                 introspectionEnabled
                         ? URI.create(introspection.getString("endpoint"))
                         : null,

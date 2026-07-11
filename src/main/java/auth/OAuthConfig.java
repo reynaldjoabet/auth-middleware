@@ -18,6 +18,10 @@ import java.net.URI;
  * @param proofMaxLength             maximum Authorization / DPoP header length, enforced before any
  *                                   parsing (Duende: ProofTokenMaxLength, anti resource-exhaustion)
  * @param nonceLifetimeSeconds       how long a server-issued DPoP nonce stays valid
+ * @param dpopNonceRequired          require a server-issued nonce in every DPoP proof (RFC 9449
+ *                                   §8-9, the FAPI 2.0 replay fix). A proof without one is answered
+ *                                   {@code use_dpop_nonce} plus a fresh {@code DPoP-Nonce} — the
+ *                                   same posture as the Scala stack's {@code dpop.nonce.enabled}
  * @param introspectionEndpoint      RFC 7662 endpoint; null disables {@code introspect = true} support
  * @param introspectionClientId      client id for introspection endpoint authentication
  * @param introspectionClientSecret  client secret for introspection endpoint authentication
@@ -32,6 +36,7 @@ public record OAuthConfig(
         long dpopClockSkewSeconds,
         int proofMaxLength,
         long nonceLifetimeSeconds,
+        boolean dpopNonceRequired,
         URI introspectionEndpoint,
         String introspectionClientId,
         String introspectionClientSecret,
@@ -43,11 +48,14 @@ public record OAuthConfig(
     public static final long DEFAULT_NONCE_LIFETIME_SECONDS = 300;
     public static final int DEFAULT_INTROSPECTION_TIMEOUT_MILLIS = 2000;
 
-    /** Config with defaults and no introspection support. */
+    /**
+     * Config with defaults, no introspection support, and DPoP nonces accepted
+     * but not required (opt in per deployment via {@code dpopNonceRequired}).
+     */
     public static OAuthConfig of(String issuer, String audience, URI jwksUri) {
         return new OAuthConfig(issuer, audience, jwksUri,
                 DEFAULT_CLOCK_SKEW_SECONDS, DEFAULT_DPOP_CLOCK_SKEW_SECONDS,
                 DEFAULT_PROOF_MAX_LENGTH, DEFAULT_NONCE_LIFETIME_SECONDS,
-                null, null, null, DEFAULT_INTROSPECTION_TIMEOUT_MILLIS);
+                false, null, null, null, DEFAULT_INTROSPECTION_TIMEOUT_MILLIS);
     }
 }

@@ -805,7 +805,6 @@ Step 1 exists precisely because the token is an authorization artifact: you auth
 
 A concert ticket authorizes entry. The gate staff still authenticate the ticket — check the hologram, scan the barcode against the issuer's system — to confirm it's genuine and not counterfeit. Authenticating the ticket is not authenticating you; it's authenticating the authorization artifact so its grant can be relied on. Access tokens are identical.
 
-
 Data origin authentication (a.k.a. message authentication) Proving that a specific artifact — a message, token, credential — genuinely came from the claimed source and hasn't been altered. it's about the integrity and provenance of the data itself.
 
 - RFC 4949 defines data origin authentication as: "The corroboration that the source of data received is as claimed," and message authentication as: "A service that, for any received message, provides assurance of the message's origin and integrity."
@@ -884,7 +883,6 @@ Authenticated Encryption with Associated Data (AEAD) is a form of encryption whi
 AEAD = Authenticated Encryption with Associated Data. It's a cipher that does two jobs atomically: encrypts the plaintext, and computes an authentication tag over both the ciphertext and some extra non-encrypted data (the AAD). On decryption, if a single bit of ciphertext, IV, or AAD was tampered with, the tag check fails and you get nothing — no partial plaintext
 
 JWE (encryption) gives you confidentiality plus integrity, always via a two-layer design: a key management algorithm (`alg` header: RSA-OAEP, ECDH-ES, A128KW, dir, PBES2…) establishes a one-time Content Encryption Key (CEK), and a content encryption method (`enc` header: A256GCM, A128CBC-HS256, XC20P) uses that CEK to AEAD-encrypt the actual payload. This hybrid design exists because asymmetric crypto is slow and size-limited, so you only ever asymmetrically protect a small symmetric key
-
 
 
 ```java
@@ -1243,14 +1241,11 @@ Message authentication is a procedure to verify that received messages are authe
 
 "Without data origin, integrity is meaningless. If you receive a perfectly intact, byte-for-byte unmodified malicious payload, the fact that it has integrity doesn't save you if you don't know it came from an adversary rather than your trusted partner."
 
-
 Message authentication or data origin authentication is an information security property that indicates that a message has not been modified while in transit (data integrity) and that the receiving party can verify the source of the message. Message authentication does not necessarily include the property of non-repudiation.
-
 
 Message authentication is typically achieved by using `message authentication codes` (MACs), `authenticated encryption` (AE), or `digital signatures`. The message authentication code, also known as digital authenticator, is used as an integrity check based on a secret key shared by two parties to authenticate information transmitted between them. It is based on using a cryptographic hash or symmetric encryption algorithm. The authentication key is only shared by exactly two parties (e.g. communicating devices), and the authentication will fail in the existence of a third party possessing the key since the algorithm will no longer be able to detect forgeries (i.e. to be able to validate the unique source of the message).In addition, the key must also be randomly generated to avoid its recovery through brute-force searches and related-key attacks designed to identify it from the messages transiting the medium
 
 Authenticated encryption (AE) is any encryption scheme which simultaneously assures the data confidentiality (also known as privacy: the encrypted message is impossible to understand without the knowledge of a secret key) and authenticity (in other words, it is unforgeable: the encrypted message includes an authentication tag that the sender can calculate only while possessing the secret key). Examples of encryption modes that provide AE are `GCM`, `CCM`.
-
 
 Many (but not all) AE schemes allow the message to contain "associated data" (AD) which is not made confidential, but is integrity protected (i.e., readable, but tamperevident). A typical example is the header of a network packet that contains its destination address. To properly route the packet, all intermediate nodes in the message path need to know the destination, but for security reasons they cannot possess the secret key. Schemes that allow associated data provide authenticated encryption with associated data, or AEAD
 
@@ -1405,3 +1400,27 @@ The HTTP Authorization scheme is the literal first token in `Authorization: <sch
 | `MutualTls` | DPoP | **reject** — *"mTLS-bound token presented with the DPoP scheme"* |
 | none | Bearer | pass (policy decides) |
 | none | DPoP | reject — no cnf binding |
+
+
+```sh
+            ┌──────────────────────────────────────────────┐
+            │            MESSAGE AUTHENTICATION            │
+            └──────────────────────┬───────────────────────┘
+                                   │
+         ┌─────────────────────────┴─────────────────────────┐
+         ▼                                                   ▼
+┌─────────────────────────────────┐               ┌─────────────────────────────────┐
+│         DATA INTEGRITY          │               │    DATA-ORIGIN AUTHENTICITY     │
+├─────────────────────────────────┤               ├─────────────────────────────────┤
+│ Has the byte-stream changed     │               │ Did the holder of the secret    │
+│ in transit?                     │               │ key actually construct this?    │
+└─────────────────────────────────┘               └─────────────────────────────────┘
+```
+
+Integrity Alone: Can be satisfied by a simple CRC32 checksum or a non-keyed hash like SHA-256. This detects accidental corruption (e.g., network noise), but an active adversary can change the message and cleanly rewrite the checksum.
+
+message authentication adds the secret key requirement. Because only the legitimate holder of that secret key could generate the matching cryptographic tag for that exact byte sequence, checking the origin simultaneously locks down the integrity.
+
+Message authentication is also called “data-origin authentication,” since it authenticates the point-of-origin for each message...because the guarantee is about the authentic origin of the message
+
+Authenticate = to verify that something is genuine or really comes from the claimed source.

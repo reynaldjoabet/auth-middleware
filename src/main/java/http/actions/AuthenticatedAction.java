@@ -23,6 +23,8 @@ public class AuthenticatedAction extends Action<Authenticated> {
 
     @Override
     public CompletionStage<play.mvc.Result> call(Http.Request req) {
-        return authenticator.authenticate(req, false, false, delegate::call);
+        // The pipeline only adds attrs, so a Request in yields a Request out.
+        return authenticator.authenticate(
+                req, false, false, rh -> delegate.call((Http.Request) rh));
     }
 }

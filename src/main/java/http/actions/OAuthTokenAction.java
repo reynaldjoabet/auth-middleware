@@ -34,7 +34,9 @@ public class OAuthTokenAction extends Action<RequireOAuth2> {
 
     @Override
     public CompletionStage<play.mvc.Result> call(Http.Request req) {
+        // The pipeline only adds attrs, so a Request in yields a Request out.
         return authenticator.authenticate(
-                req, configuration.requireDPoP(), configuration.introspect(), delegate::call);
+                req, configuration.requireDPoP(), configuration.introspect(),
+                rh -> delegate.call((Http.Request) rh));
     }
 }

@@ -144,9 +144,10 @@ object MultiNodeMain extends IOApp.Simple {
 
   val run: IO[Unit] =
     AppConfigLoader.load[IO].flatMap { cfg =>
-      // Never log cfg.db directly — the password is a plain String. Config
-      // invariants (e.g. redis.nodes non-empty) are enforced at load time by
-      // the settings themselves, so a bad config fails before we get here.
+      // Secrets are `Secret`s with a redacted toString, so logging config
+      // values here cannot leak them. Config invariants (e.g. redis.nodes
+      // non-empty) are enforced at load time by the settings themselves, so a
+      // bad config fails before we get here.
       IO(
         log.info(
           "Multi-node start: http={}, db={}, redis={} node(s)",

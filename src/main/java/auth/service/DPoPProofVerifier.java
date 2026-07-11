@@ -126,11 +126,13 @@ public class DPoPProofVerifier {
                     nonce == null ? null : new Nonce(nonce));
             return DPoPResult.ok(jkt, nonce);
         } catch (InvalidDPoPProofException e) {
+            // detail stays in the logs; the client-visible description is fixed
+            // (Nimbus messages can echo htu/htm and claim values)
             log.debug("DPoP proof rejected: {}", e.getMessage());
-            return DPoPResult.fail("invalid_dpop_proof", e.getMessage());
+            return DPoPResult.fail("invalid_dpop_proof", "Invalid DPoP proof");
         } catch (AccessTokenValidationException e) {
             log.debug("DPoP access token binding rejected: {}", e.getMessage());
-            return DPoPResult.fail("invalid_token", e.getMessage());
+            return DPoPResult.fail("invalid_token", "Access token binding failed");
         } catch (JOSEException e) {
             log.debug("DPoP proof signature rejected: {}", e.getMessage());
             return DPoPResult.fail("invalid_dpop_proof", "DPoP proof signature verification failed");

@@ -246,6 +246,11 @@ object AccessTokenValidator {
                 .either(j)
                 .bimap(m => (AuthError.InvalidToken.Rejected, m), Some(_))
           }
+          // `exp` is in the default requiredClaims, but that set is
+          // operator-configurable — reject rather than NPE if it was relaxed.
+          expiresAt <- Option(claims.getExpirationTime)
+            .map(_.toInstant)
+            .toRight((AuthError.InvalidToken.Rejected, "missing exp claim"))
           // Fail closed on a present-but-malformed cnf: never silently downgrade a
           // sender-constrained token to an unbound one.
           confirmation <- confirmationOf(claims) match {
@@ -260,7 +265,7 @@ object AccessTokenValidator {
             .flatMap(ClientId.option),
           scopes = rawScopeTokens(claims).flatMap(ScopeToken.option).toSet,
           tokenId = tokenId,
-          expiresAt = claims.getExpirationTime.toInstant,
+          expiresAt = expiresAt,
           acr = stringClaim(claims, "acr").flatMap(Acr.option),
           authTime = dateClaim(claims, "auth_time"),
           confirmation = confirmation,

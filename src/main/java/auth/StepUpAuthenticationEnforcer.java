@@ -12,9 +12,11 @@ public class StepUpAuthenticationEnforcer {
 		ALLOW, REQUIRE_STEP_UP
 	}
 
-	public AuthDecision evaluate(JWTClaimsSet claims, PaymentRequest payment) throws Exception {
+	public AuthDecision evaluate(JWTClaimsSet claims, PaymentRequest payment) throws java.text.ParseException {
 		String acr = claims.getStringClaim("acr");
-		Date authTime = (Date) claims.getClaim("auth_time");
+		// getDateClaim handles the NumericDate encoding (a Long in a parsed
+		// claims set) — a raw (Date) cast would throw ClassCastException.
+		Date authTime = claims.getDateClaim("auth_time");
 
 		boolean scaPerformed = HIGH_RISK_ACR.equals(acr);
 		boolean authTimeFresh = authTime != null

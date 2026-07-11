@@ -38,7 +38,8 @@ object Main extends IOApp.Simple {
 
   val run: IO[Unit] =
     AppConfigLoader.load[IO].flatMap { cfg =>
-      // Never log cfg.db directly — password is a plain String and would leak.
+      // Secrets (db password, nonce keys, client secrets) are `Secret`s with a
+      // redacted toString, so logging config values here cannot leak them.
       IO(
         log.info(
           "Configuration loaded: http={}, db={}",

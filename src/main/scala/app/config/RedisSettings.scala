@@ -54,7 +54,7 @@ final case class RedisSettings(
     // fall back to a default localhost endpoint.
     nodes: List[RedisEndpoint] :| MinLength[1],
     username: String,
-    password: Option[String],
+    password: Option[Secret],
     database: Int :| Interval.Closed[0, 15],
     tls: Boolean,
     clientName: String :| Not[Blank],
@@ -87,7 +87,8 @@ final case class RedisSettings(
       connectTimeout = connectTimeout,
       watchdog =
         WatchdogConfig(pingInterval = pingInterval, pingTimeout = pingTimeout),
-      auth = password.map(pw => SageAuth(password = pw, username = username)),
+      auth =
+        password.map(pw => SageAuth(password = pw.value, username = username)),
       tls = Option.when(tls)(TlsConfig(TrustSource.System)),
       topology = topology,
       database = database,

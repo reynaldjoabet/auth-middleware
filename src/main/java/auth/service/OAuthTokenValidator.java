@@ -91,8 +91,9 @@ public class OAuthTokenValidator {
             return ValidationResult.ok(processor.process(rawToken, null));
         } catch (BadJOSEException e) {
             // detailed cause stays in the logs; the client gets the generic message
+            // (Nimbus messages can echo expected issuer/audience — internal detail)
             log.debug("Access token rejected: {}", e.getMessage());
-            return ValidationResult.fail("invalid_token", e.getMessage());
+            return ValidationResult.fail("invalid_token", "Token validation failed");
         } catch (ParseException e) {
             log.debug("Malformed access token: {}", e.getMessage());
             return ValidationResult.fail("invalid_token", "Malformed token");

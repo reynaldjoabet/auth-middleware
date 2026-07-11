@@ -18,7 +18,7 @@ object Database {
         hc.setPoolName("auth-pool")
         hc.setJdbcUrl(cfg.jdbcUrl)
         hc.setUsername(cfg.user)
-        hc.setPassword(cfg.password)
+        hc.setPassword(cfg.password.value)
         hc.setMaximumPoolSize(cfg.maxPoolSize)
         hc.setMinimumIdle(cfg.maxPoolSize)
         hc.setConnectionTimeout(cfg.connectTimeout.toMillis)

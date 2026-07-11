@@ -43,7 +43,7 @@ final case class DbConfig(
     port: Int :| Interval.Closed[1, 65535],
     name: String,
     user: String,
-    password: String,
+    password: Secret,
     maxPoolSize: Int,
     connectTimeout: FiniteDuration,
     maxLifetime: FiniteDuration,
@@ -73,15 +73,15 @@ final case class DpopSettings(
 ) derives ConfigReader
 
 /** Stateless (Duende-pattern) nonce keys: base64-encoded AES key material
-  * (16/24/32 bytes) shared by every node via the secret manager. `key` absent →
-  * an ephemeral per-process key is generated at boot (single-node/dev only;
-  * logged loudly). `previousKeys` keeps in-flight nonces valid during key
-  * rotation.
+  * (16/24/32 bytes) shared by every node via the secret manager, held as
+  * [[Secret]] so it can never leak through a logged config. `key` absent → an
+  * ephemeral per-process key is generated at boot (single-node/dev only; logged
+  * loudly). `previousKeys` keeps in-flight nonces valid during key rotation.
   */
 final case class DpopNonceSettings(
     enabled: Boolean,
-    key: Option[String],
-    previousKeys: List[String],
+    key: Option[Secret],
+    previousKeys: List[Secret],
     lifetime: FiniteDuration
 ) derives ConfigReader {
 
@@ -89,8 +89,8 @@ final case class DpopNonceSettings(
 
   def decodedPreviousKeys: List[SecretKey] = previousKeys.map(decode)
 
-  private def decode(base64: String): SecretKey =
-    DpopNonceValidator.keyFromBytes(Base64.getDecoder.decode(base64))
+  private def decode(base64: Secret): SecretKey =
+    DpopNonceValidator.keyFromBytes(Base64.getDecoder.decode(base64.value))
 }
 
 /** RFC 7662 revocation checking against the AS — the Redis-free alternative to
@@ -101,7 +101,7 @@ final case class IntrospectionSettings(
     enabled: Boolean,
     endpoint: Option[String :| HttpsUriNoFragment],
     clientId: Option[String :| NonBlank],
-    clientSecret: Option[String :| NonBlank],
+    clientSecret: Option[Secret],
     cacheTtl: FiniteDuration,
     requestTimeout: FiniteDuration
 ) derives ConfigReader {
@@ -117,7 +117,7 @@ final case class IntrospectionSettings(
       TokenIntrospection.IntrospectionConfig(
         endpoint = Uri.unsafeFromString(required(endpoint, "endpoint")),
         clientId = required(clientId, "client-id"),
-        clientSecret = required(clientSecret, "client-secret"),
+        clientSecret = required(clientSecret, "client-secret").value,
         cacheTtl = cacheTtl,
         requestTimeout = requestTimeout
       )

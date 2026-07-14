@@ -61,6 +61,18 @@ trait DpopNonceValidator[F[_]] {
 
 object DpopNonceValidator {
 
+  private val StatelessCipher = "AES/GCM/NoPadding"
+  private val StatelessTagBits = 128
+  private val StatelessIvBytes = 12
+
+  /** GCM additional authenticated data binding every nonce ciphertext to this
+    * purpose — the analogue of Duende's DataProtector purpose string
+    * (`"DPoPProofValidator-nonce"`). Even if the AES key is ever shared with
+    * another use, ciphertext minted elsewhere can never verify as a nonce.
+    */
+  private val StatelessPurpose =
+    "auth.dpop.nonce".getBytes(StandardCharsets.US_ASCII)
+
   /** Adapt a [[DpopNonceStore]] (in-memory, Redis, …) into a validator with
     * strictly single-use semantics: [[NonceValidationResult.Valid]] consumes
     * the nonce, so a second presentation is [[NonceValidationResult.Invalid]].
@@ -237,16 +249,4 @@ object DpopNonceValidator {
     )
     new SecretKeySpec(bytes, "AES")
   }
-
-  private val StatelessCipher = "AES/GCM/NoPadding"
-  private val StatelessTagBits = 128
-  private val StatelessIvBytes = 12
-
-  /** GCM additional authenticated data binding every nonce ciphertext to this
-    * purpose — the analogue of Duende's DataProtector purpose string
-    * (`"DPoPProofValidator-nonce"`). Even if the AES key is ever shared with
-    * another use, ciphertext minted elsewhere can never verify as a nonce.
-    */
-  private val StatelessPurpose =
-    "auth.dpop.nonce".getBytes(StandardCharsets.US_ASCII)
 }

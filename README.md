@@ -1424,3 +1424,42 @@ message authentication adds the secret key requirement. Because only the legitim
 Message authentication is also called “data-origin authentication,” since it authenticates the point-of-origin for each message...because the guarantee is about the authentic origin of the message
 
 Authenticate = to verify that something is genuine or really comes from the claimed source.
+
+- Database-Level Encryption
+```sql
+-- Inserting an encrypted row
+INSERT INTO users (username, secret_data) 
+VALUES ('jreynald', pgp_sym_encrypt('my_super_secret_payload', 'my_encryption_key'));
+
+-- Reading the decrypted row
+SELECT username, pgp_sym_decrypt(secret_data, 'my_encryption_key') 
+FROM users;
+```
+
+- Application-Level (Client-Side) Encryption
+`For higher security, the encryption is shifted entirely to the application backend.`
+
+AD (Associated Data) or AAD (Additional Authenticated Data) is a feature of some authenticated encryption schemes that allows you to include additional data in the authentication process without encrypting it. This means that while the associated data remains in plaintext and can be read by anyone, it is still protected against tampering. If an attacker modifies the associated data, the authentication tag will not match, and the decryption process will fail.
+
+Implementing this application-side introduces a strict architectural requirement: The application must know the Primary Key before it encrypts the payload.
+
+If you are using database-generated sequential IDs (like `PostgreSQL SERIAL` or `MySQL AUTO_INCREMENT`), the application doesn't know the row's ID until after the INSERT completes. You cannot use the ID as AAD to encrypt the SSN for the initial insert.
+
+Because of this, systems utilizing AAD context binding almost exclusively rely on Client-Generated UUIDs (like `UUIDv4` or `ULID`). The application generates the UUID, uses it to construct the AAD, encrypts the SSN, and then inserts both the UUID and the ciphertext into the database in a single trip.
+
+## Envelope Encryption
+In envelope encryption, a user generates a data encryption key (DEK) locally, encrypts data with the DEK, sends the DEK to a KMS to be encrypted (with a key managed by KMS - KEK), and then stores the encrypted DEK. At a later point, a user can retrieve the encrypted DEK for the encrypted data, use the KEK from KMS to decrypt the DEK, and use the decrypted DEK to decrypt the data.
+
+
+Envelope encryption is a technique that uses two layers of cryptographic protection. One layer secures the data through a blend of asymmetric and symmetric ciphers. It secures data using a unique key called the Data Encryption Key (DEK).
+
+The process involves encrypting your data with a DEK, then wrapping the DEK with a Customer Master Key (CMK).
+
+A step-by-step of the steps involved:
+- The method generates a random symmetric key (the Data Encryption Key, or DEK) to secure the data.
+- The payload ready for transmission through the insecure/secure network is then protected using this symmetric key.
+- The symmetric key is then wrapped using the recipient's public key (asymmetric cryptography), otherwise called the root key.
+- It sends the wrapped symmetric key and the ciphertext to the recipient.
+- The recipient uses their private key to unwrap the symmetric key.
+- After unwrapping the symmetric key, that key helps the recipient decrypt the data
+ 

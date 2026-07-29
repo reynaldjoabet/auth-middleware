@@ -4,7 +4,6 @@ import cats.effect.Sync
 import cats.syntax.either.*
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
-import app.config.given
 import pureconfig.ConfigSource
 import pureconfig.error.ConfigReaderException
 

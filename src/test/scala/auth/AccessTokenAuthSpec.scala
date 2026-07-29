@@ -10,7 +10,6 @@ import com.nimbusds.jose.jwk.JWKSelector
 import com.nimbusds.jose.jwk.source.JWKSource
 import com.nimbusds.jose.proc.SecurityContext
 import io.github.iltotore.iron.*
-import io.github.iltotore.iron.constraint.all.*
 import munit.CatsEffectSuite
 import org.http4s.AuthScheme
 import org.http4s.AuthedRoutes
@@ -499,7 +498,6 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
   }
 
   test("requireFreshAuth: 401 with max_age when the token has no auth_time") {
-    import scala.concurrent.duration.*
     freshApp(MaxAuthAge(300)).run(payment(sign(claims()))).map { resp =>
       assertEquals(resp.status, Status.Unauthorized)
       val challenge =

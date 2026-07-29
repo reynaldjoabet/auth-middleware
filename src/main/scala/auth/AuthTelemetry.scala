@@ -15,7 +15,7 @@ import com.nimbusds.jose.jwk.source.{
 }
 import com.nimbusds.jose.proc.SecurityContext
 import com.nimbusds.jose.util.events.{Event, EventListener}
-import com.nimbusds.jose.util.{Resource as JoseResource, ResourceRetriever}
+import com.nimbusds.jose.util.ResourceRetriever
 import org.typelevel.otel4s.Attribute
 import org.typelevel.otel4s.metrics.{
   BucketBoundaries,

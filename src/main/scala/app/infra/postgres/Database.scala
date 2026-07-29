@@ -3,7 +3,6 @@ package app.infra.postgres
 import app.config.DbConfig
 
 import cats.effect.{Resource, Sync}
-import cats.syntax.functor.*
 import cats.syntax.flatMap.*
 import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 import cats.syntax.all.catsSyntaxApplicativeError

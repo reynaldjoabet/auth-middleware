@@ -1,6 +1,5 @@
 package auth
 import io.github.iltotore.iron.*
-import io.github.iltotore.iron.constraint.all.*
 
 object Scopes {
 

@@ -49,6 +49,8 @@ lazy val root = (project in file("."))
       pureconfigGeneric,
       Dependencies.caffeine,
       Dependencies.hikaricp,
+      Dependencies.flyway,
+      Dependencies.flywayPostgres % Runtime,
       Dependencies.postgres % Runtime,
       Dependencies.logback % Runtime,
       otelJava,

@@ -3,7 +3,7 @@ package app.http
 import auth.dpop.{DpopConfig, DpopNonceValidator, DpopVerifier}
 import auth.revocation.{TokenDenylist, TokenIntrospection}
 import auth.accesstoken.AccessTokenValidator
-import auth.{AuthEvents, AccessTokenAuth}
+import auth.{AccessTokenAuth, AuthEvents, AuthTelemetry}
 import cats.effect.{Async, Resource}
 import cats.syntax.all.*
 import fs2.io.net.Network
@@ -15,6 +15,7 @@ import app.config.AppConfig
 import app.infra.postgres.Database
 import com.nimbusds.oauth2.sdk.dpop.verifiers.DPoPProofUse
 import com.nimbusds.oauth2.sdk.util.singleuse.SingleUseChecker
+import org.typelevel.otel4s.trace.Tracer
 
 object Server {
 
@@ -33,16 +34,28 @@ object Server {
     * @param events
     *   observability sink for every auth decision; compose with
     *   `AuthEvents.combine(AuthEvents.slf4j, otelSink)` for logs + metrics
+    * @param telemetry
+    *   latency and dependency-health instrumentation for the auth path
+    *   (validation, denylist, introspection, JWKS). Defaults to
+    *   [[auth.AuthTelemetry.noop]]; pass [[auth.AuthTelemetry.otel]] to record.
     */
-  def resource[F[_]: Async: Network](
+  def resource[F[_]: Async: Network: Tracer](
       cfg: AppConfig,
       denylist: TokenDenylist[F],
       events: AuthEvents[F],
+      telemetry: AuthTelemetry[F] = AuthTelemetry.noop[F],
       singleUseChecker: Option[SingleUseChecker[DPoPProofUse]] = None,
       nonceOverride: Option[DpopNonceValidator[F]] = None
   ): Resource[F, Http4sServer] =
     for {
       ds <- Database.pool[F](cfg.db)
+
+      // Before anything binds: a node whose schema is behind must not serve.
+      _ <- Resource.eval(
+        Async[F].whenA(cfg.db.migrateOnStart)(
+          Database.migrate[F](ds, cfg.db.baselineOnMigrate)
+        )
+      )
 
       // RFC 7662 revocation via the AS (fail closed); owns its pooled client.
       introspection <- cfg.auth.introspection.toIntrospectionConfig match {
@@ -55,13 +68,17 @@ object Server {
             .map(Some(_))
       }
 
+      // The validator instruments what it is given, so the denylist, the
+      // introspection client and Nimbus's JWKS cache are all covered from this
+      // one wiring point.
       validator <- Resource.eval(
         AccessTokenValidator
           .default[F](
             cfg.auth.toAccessTokenConfig,
             events,
             denylist,
-            introspection
+            introspection,
+            telemetry
           )
       )
 
@@ -117,7 +134,7 @@ object Server {
       authMw =
         AccessTokenAuth
           .middleware[F](validator, events, dpopVerifier = dpopVerifier)
-      httpApp = HttpApi.httpApp[F](ds, authMw)
+      httpApp = HttpApi.httpApp[F](Database.ping[F](ds), authMw)
       server <- EmberServerBuilder
         .default[F]
         .withHost(cfg.http.host)

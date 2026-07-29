@@ -35,6 +35,8 @@ class AppConfigSpec extends FunSuite {
             connect-timeout = 5 seconds
             max-lifetime = 30 minutes
             leak-detection-threshold = 10 seconds
+            migrate-on-start = true
+            baseline-on-migrate = false
           }
           auth {
             issuer = "https://as.test.example"

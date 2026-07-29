@@ -37,6 +37,14 @@ final case class HttpServerConfig(
 
 /** Database connection + HikariCP pool tuning. The password is a [[Secret]] so
   * the whole case class is safe to log.
+  *
+  * @param migrateOnStart
+  *   apply pending Flyway migrations during boot, before the server binds. Turn
+  *   it off where migrations are a separate deploy step (a k8s Job, a DBA
+  *   gate); the app then assumes the schema is already current.
+  * @param baselineOnMigrate
+  *   see [[app.infra.postgres.Database.migrate]] — a one-shot switch for
+  *   adopting Flyway on a database that already has the schema.
   */
 final case class DbConfig(
     host: String,
@@ -47,7 +55,9 @@ final case class DbConfig(
     maxPoolSize: Int,
     connectTimeout: FiniteDuration,
     maxLifetime: FiniteDuration,
-    leakDetectionThreshold: FiniteDuration
+    leakDetectionThreshold: FiniteDuration,
+    migrateOnStart: Boolean,
+    baselineOnMigrate: Boolean
 ) derives ConfigReader {
   def jdbcUrl: String = s"jdbc:postgresql://$host:$port/$name"
 }

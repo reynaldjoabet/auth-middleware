@@ -2,7 +2,7 @@ package app
 
 import scala.concurrent.duration.*
 
-import auth.AuthEvents
+import auth.{AuthEvents, AuthTelemetry}
 import cats.effect.unsafe.IORuntimeConfig
 import cats.effect.{IO, IOApp, Resource}
 import com.nimbusds.oauth2.sdk.dpop.verifiers.DPoPProofUse
@@ -10,6 +10,7 @@ import com.nimbusds.oauth2.sdk.util.singleuse.SingleUseChecker
 import org.http4s.server.Server as Http4sServer
 import org.slf4j.LoggerFactory
 import org.typelevel.otel4s.oteljava.OtelJava
+import org.typelevel.otel4s.trace.Tracer
 import sage.backend.SageClient
 
 import app.config.{AppConfig, AppConfigLoader}
@@ -128,16 +129,26 @@ object MultiNodeMain extends IOApp.Simple {
         else
           Resource.pure[IO, Option[SingleUseChecker[DPoPProofUse]]](None)
 
-      // Logs + OpenTelemetry metrics. autoconfigure is a no-op with no exporter.
+      // Logs + OpenTelemetry metrics and traces. autoconfigure is a no-op with
+      // no exporter.
       otel <- Resource.eval(OtelJava.global[IO])
       meter <- Resource.eval(otel.meterProvider.get("auth-middleware"))
+      given Tracer[IO] <- Resource.eval(
+        otel.tracerProvider.get("auth-middleware")
+      )
       otelEvents <- Resource.eval(AuthEvents.otel[IO](meter))
       events = AuthEvents.combine(AuthEvents.slf4j[IO], otelEvents)
+
+      // Per-dependency latency, which matters more here than on one node: with
+      // the denylist and the jti set both in Redis, "the cluster is slow" and
+      // "Redis is slow" are the same picture until something separates them.
+      telemetry <- AuthTelemetry.otel[IO](meter)
 
       server <- Server.resource[IO](
         cfg,
         denylist,
         events,
+        telemetry,
         singleUseChecker = jtiChecker
       )
     } yield server

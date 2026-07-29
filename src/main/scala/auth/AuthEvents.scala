@@ -6,6 +6,7 @@ import cats.effect.Sync
 import org.slf4j.LoggerFactory
 import org.typelevel.otel4s.Attribute
 import org.typelevel.otel4s.metrics.Meter
+import org.typelevel.otel4s.trace.Tracer
 
 /** Observability hook for authentication outcomes.
   *
@@ -43,15 +44,23 @@ object AuthEvents {
 
   /** SLF4J-backed default: successes at DEBUG, client errors at INFO (they are
     * routine), availability problems at ERROR (they page someone).
+    *
+    * Every line carries the current `trace_id`/`span_id` in the MDC (see
+    * [[TraceLogging]]) — an authentication rejection is exactly the log line
+    * you want to pivot from into the trace that produced it. Pass `Tracer.noop`
+    * where no tracing is configured; the sink then behaves identically minus
+    * those fields.
     */
-  def slf4j[F[_]: Sync]: AuthEvents[F] = new AuthEvents[F] {
+  def slf4j[F[_]: Sync: Tracer]: AuthEvents[F] = new AuthEvents[F] {
     private val log = LoggerFactory.getLogger("auth")
 
     def authSucceeded(ctx: AuthContext): F[Unit] =
-      Sync[F].delay(log.debug("authentication succeeded: {}", ctx))
+      TraceLogging.withTraceContext() {
+        log.debug("authentication succeeded: {}", ctx)
+      }
 
     def authFailed(error: AuthError, internalDetail: String): F[Unit] =
-      Sync[F].delay {
+      TraceLogging.withTraceContext() {
         error match {
           case AuthError.ValidationUnavailable =>
             log.error("token validation unavailable: {}", internalDetail)
@@ -66,13 +75,13 @@ object AuthEvents {
         error: AuthError,
         internalDetail: String
     ): F[Unit] =
-      Sync[F].delay(
+      TraceLogging.withTraceContext() {
         log.debug(
           "challenge issued ({}): {}",
           outcomeCode(error),
           internalDetail
         )
-      )
+      }
   }
 
   /** OpenTelemetry metrics sink — the port of Duende's `Telemetry` counters.

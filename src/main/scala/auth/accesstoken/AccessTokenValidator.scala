@@ -62,31 +62,47 @@ object AccessTokenValidator {
     *   inactive token is rejected `invalid_token`, an unreachable endpoint
     *   fails closed as 503. Build a second validator without it for route
     *   groups that should not pay the network hop.
+    * @param telemetry
+    *   latency/health instrumentation for this validator and the dependencies
+    *   handed to it — including Nimbus's own JWKS cache lifecycle, which is
+    *   otherwise entirely opaque. Defaults to [[AuthTelemetry.noop]].
     */
   def default[F[_]: Sync](
       config: AccessTokenConfig,
       events: AuthEvents[F],
       denylist: TokenDenylist[F],
-      introspection: Option[TokenIntrospection[F]] = None
+      introspection: Option[TokenIntrospection[F]] = None,
+      telemetry: AuthTelemetry[F] = AuthTelemetry.noop[F]
   ): F[AccessTokenValidator[F]] =
     Sync[F]
       .delay {
-        val retriever = new DefaultResourceRetriever(
-          config.httpConnectTimeout.toMillis.toInt,
-          config.httpReadTimeout.toMillis.toInt,
-          config.jwksSizeLimitBytes
+        val retriever = telemetry.instrumentJwksRetriever(
+          new DefaultResourceRetriever(
+            config.httpConnectTimeout.toMillis.toInt,
+            config.httpReadTimeout.toMillis.toInt,
+            config.jwksSizeLimitBytes
+          )
         )
+        // The listener overloads are what enable each layer, so these carry the
+        // same semantics as the plain `.retrying(true)` / `.outageTolerant(ttl)`
+        // calls they replace — they just also report what the layer did.
         JWKSourceBuilder
           .create[SecurityContext](config.jwksUri.toURL, retriever)
           .cache(
             config.jwksCacheTtl.toMillis,
-            config.jwksRefreshTimeout.toMillis
+            config.jwksRefreshTimeout.toMillis,
+            telemetry.jwksCacheListener[SecurityContext]
           )
-          .retrying(true)
-          .outageTolerant(config.jwksOutageTtl.toMillis)
+          .retrying(telemetry.jwksRetryListener[SecurityContext])
+          .outageTolerant(
+            config.jwksOutageTtl.toMillis,
+            telemetry.jwksOutageListener[SecurityContext]
+          )
           .build()
       }
-      .map(withKeySource(config, _, events, denylist, introspection))
+      .map(
+        withKeySource(config, _, events, denylist, introspection, telemetry)
+      )
 
   /** Build an access token validator over an explicit key source — used in
     * tests and for non-HTTP key distribution.
@@ -105,15 +121,27 @@ object AccessTokenValidator {
     *   revocation store
     * @param introspection
     *   optional RFC 7662 introspection
+    * @param telemetry
+    *   instrumentation for the validator and its revocation dependencies; the
+    *   key source is caller-supplied here, so nothing instruments it
     */
   def withKeySource[F[_]: Sync](
       config: AccessTokenConfig,
       keySource: JWKSource[SecurityContext],
       events: AuthEvents[F],
       denylist: TokenDenylist[F],
-      introspection: Option[TokenIntrospection[F]] = None
+      introspection: Option[TokenIntrospection[F]] = None,
+      telemetry: AuthTelemetry[F] = AuthTelemetry.noop[F]
   ): AccessTokenValidator[F] =
-    new Impl[F](config, keySource, events, denylist, introspection)
+    telemetry.instrumentValidator(
+      new Impl[F](
+        config,
+        keySource,
+        events,
+        telemetry.instrumentDenylist(denylist),
+        introspection.map(telemetry.instrumentIntrospection)
+      )
+    )
 
   private final class Impl[F[_]: Sync](
       config: AccessTokenConfig,

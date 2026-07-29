@@ -2,11 +2,17 @@
 
   <!-- Stdout in containers: let the platform ship logs. Swap the encoder for
        net.logstash.logback.encoder.LogstashEncoder once that dep is on the
-       classpath if you want structured JSON. trace_id / span_id are pulled
-       from the MDC, populated by the otel4s logging appender / middleware. -->
+       classpath if you want structured JSON.
+
+       trace_id / span_id come from auth.TraceLogging, which populates the MDC
+       around the log call itself — a fiber can change threads between the
+       start of a request and the line being written, so per-request MDC
+       population would be wrong. request_id comes from the same helper on the
+       unhandled-error path (app.http.HttpApi). Lines written outside those
+       helpers render the fields empty rather than stale. -->
   <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
     <encoder>
-      <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] %logger{36} traceId=%X{trace_id:-} spanId=%X{span_id:-} - %msg%n</pattern>
+      <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] %logger{36} traceId=%X{trace_id:-} spanId=%X{span_id:-} requestId=%X{request_id:-} - %msg%n</pattern>
     </encoder>
   </appender>
 

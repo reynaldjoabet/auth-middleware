@@ -1,11 +1,12 @@
 package app
 
-import auth.AuthEvents
+import auth.{AuthEvents, AuthTelemetry}
 import cats.effect.{IO, IOApp, Resource}
 import cats.effect.unsafe.IORuntimeConfig
 import org.http4s.server.Server as Http4sServer
 import org.slf4j.LoggerFactory
 import org.typelevel.otel4s.oteljava.OtelJava
+import org.typelevel.otel4s.trace.Tracer
 import sage.backend.SageClient
 import scala.concurrent.duration.*
 import app.config.{AppConfigLoader, AppConfig}
@@ -29,11 +30,17 @@ object Main extends IOApp.Simple {
       // exporter is configured, so local runs cost nothing.
       otel <- Resource.eval(OtelJava.global[IO])
       meter <- Resource.eval(otel.meterProvider.get("auth-middleware"))
+      given Tracer[IO] <- Resource.eval(
+        otel.tracerProvider.get("auth-middleware")
+      )
       otelEvents <- Resource.eval(AuthEvents.otel[IO](meter))
       events = AuthEvents.combine(AuthEvents.slf4j[IO], otelEvents)
+      // Counters say what was decided; this says what it cost and which
+      // dependency spent it.
+      telemetry <- AuthTelemetry.otel[IO](meter)
       // No jti/nonce override: single node uses the in-memory jti checker and
       // config-driven stateless nonces. Redis here backs only revocation.
-      server <- Server.resource[IO](cfg, denylist, events)
+      server <- Server.resource[IO](cfg, denylist, events, telemetry)
     } yield server
 
   val run: IO[Unit] =

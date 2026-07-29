@@ -180,6 +180,11 @@ object Dependencies {
   lazy val hikaricp = "com.zaxxer" % "HikariCP" % Version.hikaricp
   lazy val flyway = "org.flywaydb" % "flyway-core" % Version.flyway
 
+  // Since Flyway 10 each database gets its own module; without this on the
+  // classpath flyway-core cannot resolve a jdbc:postgresql: url at all.
+  lazy val flywayPostgres =
+    "org.flywaydb" % "flyway-database-postgresql" % Version.flyway
+
   // AWS v2
   lazy val ec2 = "software.amazon.awssdk" % "ec2" % Version.awsV2
   lazy val iam = "software.amazon.awssdk" % "iam" % Version.awsV2

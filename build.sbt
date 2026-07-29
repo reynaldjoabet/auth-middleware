@@ -15,7 +15,6 @@ ThisBuild / scalacOptions := Seq(
   "-Wunused:all",
   "-Wvalue-discard",
   "-Wnonunit-statement",
-  "-Wshadow:all",
   "-Wsafe-init",
   "-Xcheck-macros",
   "-Xmax-inlines:64"

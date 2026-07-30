@@ -14,32 +14,32 @@ object Dependencies {
     val zioKafka = "3.6.0"
 
     // --- HTTP ---
-    val http4s = "0.23.34"
+    val http4s = "0.23.36"
     val sttp4 = "4.0.25"
     val tapir = "1.13.18"
 
     // --- JSON ---
-    val jsoniter = "2.38.14"
-    val circe = "0.14.15"
+    val jsoniter = "2.39.1"
+    val circe = "0.14.16"
 
     // --- FP ---
     val catsEffect = "3.7.0"
     val fs2 = "3.13.0"
     val fs2Kafka = "4.0.0"
     val chimney = "1.10.0"
-    val iron = "3.3.1"
+    val iron = "3.3.2"
     val hedgehog = "0.13.0"
     val scalacheck = "1.19.0"
-    val munit = "1.3.1"
+    val munit = "1.3.4"
     val munitCatsEffect = "2.2.0"
 
     // --- DB ---
     val quill = "4.8.6"
     val magnum = "2.0.0-M3"
     val skunk = "1.1.0-RC1"
-    val hikaricp = "7.0.2"
-    val flyway = "12.9.0"
-    val postgres = "42.7.11"
+    val hikaricp = "7.1.0"
+    val flyway = "13.1.0"
+    val postgres = "42.7.13"
 
     // --- Security ---
     val jwtScala = "11.0.4"
@@ -47,13 +47,13 @@ object Dependencies {
     val password4j = "1.8.4"
     val auth0 = "4.5.2"
     val nimbusJoseJwt = "10.9.1"
-    val nimbusOauth2Oidc = "11.37.2"
+    val nimbusOauth2Oidc = "11.38.2"
     val vault = "5.1.0"
 
     // --- Logging ---
     val scribe = "3.19.0"
     val slf4j = "2.0.18"
-    val logback = "1.5.34"
+    val logback = "1.6.1"
 
     // --- Cache ---
     val caffeine = "3.2.4"
@@ -244,14 +244,14 @@ object Dependencies {
 
   // Redis/Valkey client (Sage) — recovered after the Dependencies.scala wipe.
   lazy val sageClientCe =
-    "com.github.ghostdogpr" %% "sage-client-ce" % "0.2.0"
+    "com.github.ghostdogpr" %% "sage-client-ce" % "0.3.0"
   lazy val sageClientZio =
-    "com.github.ghostdogpr" %% "sage-client-zio" % "0.2.0"
+    "com.github.ghostdogpr" %% "sage-client-zio" % "0.3.0"
 
   // Logging
   lazy val scribe = "com.outr" %% "scribe" % Version.scribe
-  lazy val scribeSlf4j =
-    "com.outr" %% "scribe-slf4j" % Version.scribe
+  lazy val scribeSlf4j2 =
+    "com.outr" %% "scribe-slf4j2" % Version.scribe
   lazy val scribeCats =
     "com.outr" %% "scribe-cats" % Version.scribe
 

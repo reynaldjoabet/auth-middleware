@@ -58,13 +58,18 @@ lazy val root = (project in file("."))
       Dependencies.logback % Runtime,
       otelJava,
       "io.opentelemetry" % "opentelemetry-exporter-otlp" % "1.63.0" % Runtime,
-      "io.opentelemetry" % "opentelemetry-sdk-extension-autoconfigure" % "1.63.0" % Runtime,
+      "io.opentelemetry" % "opentelemetry-sdk-extension-autoconfigure" % "1.64.0" % Runtime,
       Dependencies.sageClientCe,
       Dependencies.sageClientZio,
       guice,
       "jakarta.inject" % "jakarta.inject-api" % "2.0.1",
-      "com.outr" %% "scribe" % "3.19.0",
-      "com.outr" %% "scribe-slf4j" % "3.19.0"
+      scribe,
+      scribeSlf4j2
+    ),
+    excludeDependencies ++= Seq(
+      ExclusionRule("ch.qos.logback", "logback-classic"),
+      ExclusionRule("ch.qos.logback", "logback-core"),
+      ExclusionRule("org.playframework", "play-logback_3")
     )
   )
   .enablePlugins(PlayJava)

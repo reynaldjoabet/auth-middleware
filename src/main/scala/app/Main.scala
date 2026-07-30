@@ -44,7 +44,9 @@ object Main extends IOApp.Simple {
     } yield server
 
   val run: IO[Unit] =
-    AppConfigLoader.load[IO].flatMap { cfg =>
+    // Before anything can log: scribe is configured in code, not by a file on
+    // the classpath, so an unconfigured logger would silently use defaults.
+    IO(Logging.configure()) *> AppConfigLoader.load[IO].flatMap { cfg =>
       // Secrets (db password, nonce keys, client secrets) are `Secret`s with a
       // redacted toString, so logging config values here cannot leak them.
       IO(

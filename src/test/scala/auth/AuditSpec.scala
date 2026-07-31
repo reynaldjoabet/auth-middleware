@@ -1,12 +1,13 @@
 package auth
 
+import cats.effect.IO
+
 import auth.accesstoken.*
 import auth.revocation.TokenDenylist
-
-import cats.effect.IO
 import munit.CatsEffectSuite
 
 class AuditSpec extends CatsEffectSuite {
+
   import TestTokens.*
 
   private val validator =
@@ -19,14 +20,14 @@ class AuditSpec extends CatsEffectSuite {
 
   test("AuditAuthEvents records granted (with subject) and denied decisions") {
     for {
-      pair <- Audit.inMemory[IO]
+      pair        <- Audit.inMemory[IO]
       (sink, read) = pair
-      events = AuditAuthEvents[IO](sink, AuthEvents.noop[IO])
-      ctx <- validator
-        .validate(sign(claims()))
-        .map(_.fold(e => fail(s"setup: $e"), identity))
-      _ <- events.authSucceeded(ctx)
-      _ <- events.authFailed(AuthError.InvalidToken.Rejected, "detail")
+      events       = AuditAuthEvents[IO](sink, AuthEvents.noop[IO])
+      ctx         <- validator
+               .validate(sign(claims()))
+               .map(_.fold(e => fail(s"setup: $e"), identity))
+      _       <- events.authSucceeded(ctx)
+      _       <- events.authFailed(AuthError.InvalidToken.Rejected, "detail")
       records <- read
     } yield {
       assertEquals(records.length, 2)
@@ -42,13 +43,13 @@ class AuditSpec extends CatsEffectSuite {
     "AuditAuthEvents records a nonce challenge as challenged, not denied"
   ) {
     for {
-      pair <- Audit.inMemory[IO]
+      pair        <- Audit.inMemory[IO]
       (sink, read) = pair
-      events = AuditAuthEvents[IO](sink, AuthEvents.noop[IO])
-      _ <- events.challengeIssued(
-        AuthError.UseDpopNonce(DpopNonce("nonce-abc123")),
-        "detail"
-      )
+      events       = AuditAuthEvents[IO](sink, AuthEvents.noop[IO])
+      _           <- events.challengeIssued(
+             AuthError.UseDpopNonce(DpopNonce("nonce-abc123")),
+             "detail"
+           )
       records <- read
     } yield {
       assertEquals(records.length, 1)
@@ -58,14 +59,14 @@ class AuditSpec extends CatsEffectSuite {
 
   test("outcomeCode maps every AuthError variant to its stable code") {
     val cases: List[(AuthError, String)] = List(
-      AuthError.MissingToken -> "missing_token",
-      AuthError.InvalidRequest.TokenInQuery -> "invalid_request",
-      AuthError.InvalidToken.Rejected -> "invalid_token",
-      AuthError.InvalidDpopProof.Missing -> "invalid_dpop_proof",
+      AuthError.MissingToken                            -> "missing_token",
+      AuthError.InvalidRequest.TokenInQuery             -> "invalid_request",
+      AuthError.InvalidToken.Rejected                   -> "invalid_token",
+      AuthError.InvalidDpopProof.Missing                -> "invalid_dpop_proof",
       AuthError.UseDpopNonce(DpopNonce("nonce-abc123")) -> "use_dpop_nonce",
       AuthError.InsufficientScope(
         Set("payments:write")
-      ) -> "insufficient_scope",
+      )                                                         -> "insufficient_scope",
       AuthError.InsufficientUserAuthentication(Seq.empty, None) ->
         "insufficient_user_authentication",
       AuthError.ValidationUnavailable -> "validation_unavailable"
@@ -74,4 +75,5 @@ class AuditSpec extends CatsEffectSuite {
       assertEquals(outcomeCode(err), code, s"for $err")
     }
   }
+
 }

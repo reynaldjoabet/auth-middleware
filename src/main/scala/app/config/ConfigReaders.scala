@@ -1,8 +1,8 @@
 package app.config
 
 import com.comcast.ip4s.{Host, Port}
-import pureconfig.ConfigReader
 import pureconfig.error.CannotConvert
+import pureconfig.ConfigReader
 
 given ConfigReader[Host] =
   ConfigReader[String].emap(s =>

@@ -7,8 +7,8 @@ import scala.jdk.CollectionConverters.*
 
 import cats.effect.Sync
 import cats.syntax.all.*
+
 import com.nimbusds.jose.{JOSEException, JOSEObjectType, JWSHeader}
-import com.nimbusds.jose.KeySourceException
 import com.nimbusds.jose.jwk.{KeyConverter, KeyType}
 import com.nimbusds.jose.jwk.source.JWKSource
 import com.nimbusds.jose.proc.{
@@ -18,15 +18,15 @@ import com.nimbusds.jose.proc.{
   JWSVerificationKeySelector,
   SecurityContext
 }
-import com.nimbusds.jwt.proc.{DefaultJWTClaimsVerifier, DefaultJWTProcessor}
+import com.nimbusds.jose.KeySourceException
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
-
+import com.nimbusds.jwt.proc.{DefaultJWTClaimsVerifier, DefaultJWTProcessor}
 import auth.{AuthError, AuthEvents}
 
-/** Validates a DPoP proof (RFC 9449) as a standalone JWT: structure, `typ`
-  * header, signature, claim presence/format, and `iat` freshness. Unlike an
-  * access token, a proof has no issuer, audience or subject, so successful
-  * validation yields the proof's raw [[JWTClaimsSet]] rather than an
+/**
+  * Validates a DPoP proof (RFC 9449) as a standalone JWT: structure, `typ` header, signature, claim
+  * presence/format, and `iat` freshness. Unlike an access token, a proof has no issuer, audience or
+  * subject, so successful validation yields the proof's raw [[JWTClaimsSet]] rather than an
   * [[auth.AuthContext AuthContext]].
   *
   * This validator does NOT verify:
@@ -36,31 +36,33 @@ import auth.{AuthError, AuthEvents}
   *   - Replay prevention (`jti` single-use)
   *   - Nonce validation (RFC 9449 §8-9)
   *
-  * All of those are [[DpopVerifier.verifyBinding]]'s job, and Nimbus's request
-  * verifier re-checks the signature and claims there as well, so the production
-  * request path does not need this validator. It exists for flows that must
-  * judge a proof away from a resource request — e.g. an authorization-server
-  * token endpoint or diagnostics tooling.
+  * All of those are [[DpopVerifier.verifyBinding]]'s job, and Nimbus's request verifier re-checks
+  * the signature and claims there as well, so the production request path does not need this
+  * validator. It exists for flows that must judge a proof away from a resource request — e.g. an
+  * authorization-server token endpoint or diagnostics tooling.
   */
 trait DpopProofValidator[F[_]] {
 
-  /** Validate a compact-serialized DPoP proof JWT. Returns the proof's claims
-    * on the right; a redaction-safe [[AuthError]] on the left, with internal
-    * diagnostics reported via [[auth.AuthEvents AuthEvents]].
+  /**
+    * Validate a compact-serialized DPoP proof JWT. Returns the proof's claims on the right; a
+    * redaction-safe [[AuthError]] on the left, with internal diagnostics reported via
+    * [[auth.AuthEvents AuthEvents]].
     */
   def validate(proof: String): F[Either[AuthError, JWTClaimsSet]]
 }
 
 object DpopProofValidator {
 
-  /** JOSE `typ` for DPoP proof JWTs (RFC 9449 §4.1). */
+  /**
+    * JOSE `typ` for DPoP proof JWTs (RFC 9449 §4.1).
+    */
   val JoseTypeDpopJwt: JOSEObjectType = new JOSEObjectType("dpop+jwt")
 
-  /** Production factory: verifies the proof's signature with the public key
-    * carried in its own `jwk` header, as RFC 9449 §4.2 prescribes — a proof is
-    * self-signed by the client's key, there is no external JWKS to consult. The
-    * header key is only trusted here to be *self-consistent*; proving it is the
-    * key the access token was bound to is [[DpopVerifier.verifyBinding]]'s job
+  /**
+    * Production factory: verifies the proof's signature with the public key carried in its own
+    * `jwk` header, as RFC 9449 §4.2 prescribes — a proof is self-signed by the client's key, there
+    * is no external JWKS to consult. The header key is only trusted here to be *self-consistent*;
+    * proving it is the key the access token was bound to is [[DpopVerifier.verifyBinding]]'s job
     * (`cnf.jkt` comparison).
     */
   def default[F[_]: Sync](
@@ -73,8 +75,9 @@ object DpopProofValidator {
       events
     )
 
-  /** Verify proofs only against a caller-supplied key source instead of the
-    * proof's own `jwk` header — for key pinning and tests.
+  /**
+    * Verify proofs only against a caller-supplied key source instead of the proof's own `jwk`
+    * header — for key pinning and tests.
     */
   def withKeySource[F[_]: Sync](
       config: DpopConfig,
@@ -90,15 +93,14 @@ object DpopProofValidator {
       events
     )
 
-  /** Select the verification key from the proof's own `jwk` header. Returning
-    * no key makes the processor reject the proof, so each guard below is a
-    * rejection rule:
-    *   - `alg` must be allowlisted (asymmetric only — [[DpopConfig]] forbids
-    *     HMAC, where the header key would be the secret itself)
+  /**
+    * Select the verification key from the proof's own `jwk` header. Returning no key makes the
+    * processor reject the proof, so each guard below is a rejection rule:
+    *   - `alg` must be allowlisted (asymmetric only — [[DpopConfig]] forbids HMAC, where the header
+    *     key would be the secret itself)
     *   - the header must carry a JWK
     *   - the JWK must be public-only; RFC 9449 §4.2 forbids private material
-    *   - the JWK's key type must match the `alg` family (an EC key cannot back
-    *     an RSA signature)
+    *   - the JWK's key type must match the `alg` family (an EC key cannot back an RSA signature)
     */
   private final class ProofHeaderJwkSelector(
       allowedAlgorithms: Set[com.nimbusds.jose.JWSAlgorithm]
@@ -108,7 +110,7 @@ object DpopProofValidator {
         header: JWSHeader,
         context: SecurityContext
     ): java.util.List[Key] = {
-      val jwk = header.getJWK
+      val jwk        = header.getJWK
       val acceptable =
         allowedAlgorithms.contains(header.getAlgorithm) &&
           jwk != null &&
@@ -117,6 +119,7 @@ object DpopProofValidator {
       if (acceptable) KeyConverter.toJavaKeys(java.util.List.of(jwk))
       else java.util.Collections.emptyList[Key]()
     }
+
   }
 
   private final class Impl[F[_]: Sync](
@@ -136,10 +139,10 @@ object DpopProofValidator {
       // ath, htm, htu values are checked against the request by
       // DpopVerifier.verifyBinding, not here.
       val claimsVerifier = new DefaultJWTClaimsVerifier[SecurityContext](
-        null, // no audience for DPoP
-        null, // no issuer for DPoP
+        null,                     // no audience for DPoP
+        null,                     // no issuer for DPoP
         Set("iat", "jti").asJava, // required claims
-        null // no prohibited claims
+        null                      // no prohibited claims
       )
       claimsVerifier.setMaxClockSkew(config.clockSkew.toSeconds.toInt)
       p.setJWTClaimsSetVerifier(claimsVerifier)
@@ -185,17 +188,17 @@ object DpopProofValidator {
             case Left(other) => Sync[F].raiseError(other)
           }
 
-    /** A proof has no `exp`; its lifetime is `iat` +
-      * [[DpopConfig.proofMaxAge]]. Reject proofs older than that window
-      * (expired) or with `iat` further in the future than the clock skew allows
-      * (not yet valid).
+    /**
+      * A proof has no `exp`; its lifetime is `iat` + [[DpopConfig.proofMaxAge]]. Reject proofs
+      * older than that window (expired) or with `iat` further in the future than the clock skew
+      * allows (not yet valid).
       */
     private def checkFreshness(
         claims: JWTClaimsSet
     ): F[Either[AuthError, JWTClaimsSet]] =
       Sync[F].realTimeInstant.flatMap { now =>
         // iat presence is enforced by the claims verifier above
-        val iat = claims.getIssueTime.toInstant
+        val iat              = claims.getIssueTime.toInstant
         val oldestAcceptable =
           now.minusSeconds((config.proofMaxAge + config.clockSkew).toSeconds)
         val newestAcceptable = now.plusSeconds(config.clockSkew.toSeconds)
@@ -212,9 +215,10 @@ object DpopProofValidator {
         else claims.asRight[AuthError].pure[F]
       }
 
-    /** Require the DPoP-specific claims to be present and string-typed. Their
-      * values are only meaningful against a concrete request/token, so checking
-      * them is [[DpopVerifier.verifyBinding]]'s job.
+    /**
+      * Require the DPoP-specific claims to be present and string-typed. Their values are only
+      * meaningful against a concrete request/token, so checking them is
+      * [[DpopVerifier.verifyBinding]]'s job.
       */
     private def checkProofClaimFormats(
         claims: JWTClaimsSet
@@ -238,5 +242,7 @@ object DpopProofValidator {
         detail: String
     ): F[Either[AuthError, JWTClaimsSet]] =
       events.authFailed(error, Option(detail).getOrElse("")).as(error.asLeft)
+
   }
+
 }

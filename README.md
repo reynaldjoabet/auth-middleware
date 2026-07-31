@@ -1462,4 +1462,27 @@ A step-by-step of the steps involved:
 - It sends the wrapped symmetric key and the ciphertext to the recipient.
 - The recipient uses their private key to unwrap the symmetric key.
 - After unwrapping the symmetric key, that key helps the recipient decrypt the data
+
+## Core Problem: The 4 KB Limit
+
+AWS KMS keys are restricted to encrypting payloads up to 4 kilobytes ([01:30]). To encrypt larger volumes of application data (e.g., objects in S3, records in RDS, or DynamoDB tables), services use a two-tiered key hierarchy known as Envelope Encryption.
  
+ Rather than using a primary KMS key to encrypt raw data directly, you encrypt a secondary Data Encryption Key (DEK) with your KMS key, and use that DEK to encrypt your actual data
+
+ ### Encryption Workflow
+
+- DEK Generation: When a service like AWS S3 needs to encrypt large data, it calls KMS to generate a data key.
+- Two Key Forms: KMS returns the DEK in two versions:
+   - A plain-text DEK
+   - An encrypted DEK (encrypted by the KMS key)
+- Data Encryption (Outside KMS): The plain-text DEK encrypts the large payload locally within the calling service (e.g., S3 or RDS), bypassing KMS API limits and reducing latency 
+- Storage & Cleanup: Once the payload is encrypted, the plain-text DEK is immediately discarded from memory. The encrypted payload and the encrypted DEK are stored together
+
+### Decryption Workflow
+- Permission Check: When a user or application requests the encrypted data, they must have `kms:Decrypt` IAM permissions for the root KMS key
+- Unwrapping the DEK: The service sends the stored encrypted DEK to KMS, which uses the root KMS key to decrypt it and return a plain-text DEK
+- Data Decryption: The calling service uses the returned plain-text DEK to decrypt the data payload locally, then discards the plain-text DEK once again
+
+### Why Envelope Encryption Matters
+- Performance & Scale: Encrypting massive files directly via KMS network calls would create severe latency and API bottlenecks . Local DEK encryption removes these limits.
+- Separation of Duties: KMS acts solely as a secure authority to manage and protect the keys that unlock your data, rather than processing large data volumes directly

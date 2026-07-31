@@ -3,12 +3,14 @@ package dpop
 
 import org.http4s.Status
 
-/** RFC 9449 §8-9 server-provided nonces backed by a [[dpop.DpopNonceStore]]
-  * (strictly single-use), exercised through the middleware: the challenge/retry
-  * handshake, single-use consumption, rejection of unknown nonces, and §8.2
-  * rotation (a fresh `DPoP-Nonce` on every response to a DPoP request).
+/**
+  * RFC 9449 §8-9 server-provided nonces backed by a [[dpop.DpopNonceStore]] (strictly single-use),
+  * exercised through the middleware: the challenge/retry handshake, single-use consumption,
+  * rejection of unknown nonces, and §8.2 rotation (a fresh `DPoP-Nonce` on every response to a DPoP
+  * request).
   */
 class DpopNonceStoreSpec extends DpopBaseSuite {
+
   import TestTokens.*
 
   test(
@@ -34,21 +36,21 @@ class DpopNonceStoreSpec extends DpopBaseSuite {
     appWithNonces.use { a =>
       for {
         first <- a.run(
-          dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
-        )
-        _ = assertEquals(first.status, Status.Unauthorized)
-        nonce = nonceOf(first)
+                   dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
+                 )
+        _       = assertEquals(first.status, Status.Unauthorized)
+        nonce   = nonceOf(first)
         second <- a.run(
-          dpopRequest(
-            token,
-            dpopProof(
-              "GET",
-              accountsUri.renderString,
-              token,
-              nonce = Some(nonce)
-            )
-          )
-        )
+                    dpopRequest(
+                      token,
+                      dpopProof(
+                        "GET",
+                        accountsUri.renderString,
+                        token,
+                        nonce = Some(nonce)
+                      )
+                    )
+                  )
       } yield assertEquals(second.status, Status.Ok)
     }
   }
@@ -58,33 +60,33 @@ class DpopNonceStoreSpec extends DpopBaseSuite {
     appWithNonces.use { a =>
       for {
         first <- a.run(
-          dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
-        )
+                   dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
+                 )
         nonce = nonceOf(first)
         // Distinct jti each time, so only the consumed nonce differs.
         ok <- a.run(
-          dpopRequest(
-            token,
-            dpopProof(
-              "GET",
-              accountsUri.renderString,
-              token,
-              nonce = Some(nonce)
-            )
-          )
-        )
-        _ = assertEquals(ok.status, Status.Ok)
+                dpopRequest(
+                  token,
+                  dpopProof(
+                    "GET",
+                    accountsUri.renderString,
+                    token,
+                    nonce = Some(nonce)
+                  )
+                )
+              )
+        _      = assertEquals(ok.status, Status.Ok)
         again <- a.run(
-          dpopRequest(
-            token,
-            dpopProof(
-              "GET",
-              accountsUri.renderString,
-              token,
-              nonce = Some(nonce)
-            )
-          )
-        )
+                   dpopRequest(
+                     token,
+                     dpopProof(
+                       "GET",
+                       accountsUri.renderString,
+                       token,
+                       nonce = Some(nonce)
+                     )
+                   )
+                 )
         _ = assertEquals(again.status, Status.Unauthorized)
       } yield assert(
         challengeOf(again).contains("""error="use_dpop_nonce""""),
@@ -123,26 +125,26 @@ class DpopNonceStoreSpec extends DpopBaseSuite {
     appWithNonces.use { a =>
       for {
         first <- a.run(
-          dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
-        )
-        n1 = nonceOf(first)
+                   dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
+                 )
+        n1   = nonceOf(first)
         ok1 <- a.run(
-          dpopRequest(
-            token,
-            dpopProof("GET", accountsUri.renderString, token, nonce = Some(n1))
-          )
-        )
-        _ = assertEquals(ok1.status, Status.Ok)
+                 dpopRequest(
+                   token,
+                   dpopProof("GET", accountsUri.renderString, token, nonce = Some(n1))
+                 )
+               )
+        _  = assertEquals(ok1.status, Status.Ok)
         n2 = nonceOf(ok1)
-        _ = assert(n2.nonEmpty, "success response carried no DPoP-Nonce")
-        _ = assertNotEquals(n2, n1, "rotation must mint a fresh nonce")
+        _  = assert(n2.nonEmpty, "success response carried no DPoP-Nonce")
+        _  = assertNotEquals(n2, n1, "rotation must mint a fresh nonce")
         // Steady state: the rotated nonce works directly — no 401 round trip.
         ok2 <- a.run(
-          dpopRequest(
-            token,
-            dpopProof("GET", accountsUri.renderString, token, nonce = Some(n2))
-          )
-        )
+                 dpopRequest(
+                   token,
+                   dpopProof("GET", accountsUri.renderString, token, nonce = Some(n2))
+                 )
+               )
       } yield assertEquals(ok2.status, Status.Ok)
     }
   }
@@ -154,37 +156,37 @@ class DpopNonceStoreSpec extends DpopBaseSuite {
     appWithNonces.use { a =>
       for {
         first <- a.run(
-          dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
-        )
+                   dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
+                 )
         n1 = nonceOf(first)
         // Valid nonce but wrong htu: the nonce is consumed, then Nimbus rejects.
         bad <- a.run(
-          dpopRequest(
-            token,
-            dpopProof(
-              "GET",
-              "https://evil.example/accounts",
-              token,
-              nonce = Some(n1)
-            )
-          )
-        )
+                 dpopRequest(
+                   token,
+                   dpopProof(
+                     "GET",
+                     "https://evil.example/accounts",
+                     token,
+                     nonce = Some(n1)
+                   )
+                 )
+               )
         _ = assertEquals(bad.status, Status.Unauthorized)
         _ = assert(
-          challengeOf(bad).contains("""error="invalid_dpop_proof""""),
-          challengeOf(bad)
-        )
+              challengeOf(bad).contains("""error="invalid_dpop_proof""""),
+              challengeOf(bad)
+            )
         n2 = nonceOf(bad)
-        _ = assert(
-          n2.nonEmpty,
-          "failure response must carry a fresh DPoP-Nonce for recovery"
-        )
+        _  = assert(
+              n2.nonEmpty,
+              "failure response must carry a fresh DPoP-Nonce for recovery"
+            )
         recovered <- a.run(
-          dpopRequest(
-            token,
-            dpopProof("GET", accountsUri.renderString, token, nonce = Some(n2))
-          )
-        )
+                       dpopRequest(
+                         token,
+                         dpopProof("GET", accountsUri.renderString, token, nonce = Some(n2))
+                       )
+                     )
       } yield assertEquals(recovered.status, Status.Ok)
     }
   }
@@ -202,4 +204,5 @@ class DpopNonceStoreSpec extends DpopBaseSuite {
       }
     }
   }
+
 }

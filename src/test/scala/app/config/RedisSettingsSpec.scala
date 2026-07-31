@@ -1,8 +1,9 @@
 package app.config
 
 import scala.concurrent.duration.*
-import io.github.iltotore.iron.*
 
+import io.github.iltotore.iron.*
+import io.github.iltotore.iron.constraint.all.*
 import munit.FunSuite
 
 class RedisSettingsSpec extends FunSuite {
@@ -10,7 +11,7 @@ class RedisSettingsSpec extends FunSuite {
   private def settings(nodes: List[RedisEndpoint]): RedisSettings =
     RedisSettings(
       mode = RedisMode.Standalone,
-      nodes = nodes.refineUnsafe,
+      nodes = nodes.refineUnsafe[MinLength[1]],
       username = "user",
       password = None,
       database = 0,
@@ -33,4 +34,5 @@ class RedisSettingsSpec extends FunSuite {
     // toSageConfig must not throw for a valid single-node standalone setup.
     val _ = s.toSageConfig
   }
+
 }

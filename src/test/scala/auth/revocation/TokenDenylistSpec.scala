@@ -1,8 +1,9 @@
 package auth
 package revocation
-import auth.revocation.TokenDenylist
 
 import cats.effect.IO
+
+import auth.revocation.TokenDenylist
 import munit.CatsEffectSuite
 
 class TokenDenylistSpec extends CatsEffectSuite {

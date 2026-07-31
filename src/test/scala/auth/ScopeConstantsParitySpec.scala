@@ -4,10 +4,10 @@ import java.lang.reflect.Modifier
 
 import munit.FunSuite
 
-/** The Scala [[Scopes]] object is the source of truth for the scope catalogue;
-  * the Java [[ScopeConstants]] duplicates the strings because annotation
-  * members must be compile-time constants. This test fails the build on any
-  * drift.
+/**
+  * The Scala [[Scopes]] object is the source of truth for the scope catalogue; the Java
+  * [[ScopeConstants]] duplicates the strings because annotation members must be compile-time
+  * constants. This test fails the build on any drift.
   */
 class ScopeConstantsParitySpec extends FunSuite {
 
@@ -23,4 +23,5 @@ class ScopeConstantsParitySpec extends FunSuite {
   test("ScopeConstants mirrors Scopes.all exactly") {
     assertEquals(javaConstants, scalaScopes)
   }
+
 }

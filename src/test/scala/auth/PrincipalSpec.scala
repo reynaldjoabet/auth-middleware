@@ -3,11 +3,10 @@ package auth
 import java.util.Date
 
 import com.nimbusds.jwt.JWTClaimsSet
-
 import munit.FunSuite
 
-/** Covers claim extraction that the action pipeline relies on (scopes, amr,
-  * cnf.jkt).
+/**
+  * Covers claim extraction that the action pipeline relies on (scopes, amr, cnf.jkt).
   */
 class PrincipalSpec extends FunSuite {
 
@@ -49,4 +48,5 @@ class PrincipalSpec extends FunSuite {
     assertEquals(p.subject, "user-123")
     assertEquals(p.clientId, "mobile-app")
   }
+
 }

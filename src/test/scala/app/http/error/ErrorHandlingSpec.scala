@@ -1,11 +1,11 @@
 package app.http.error
 
 import cats.effect.{IO, Ref}
+
 import io.circe.syntax.*
 import munit.CatsEffectSuite
 import org.http4s.*
 import org.http4s.implicits.*
-
 import app.domain.error.AppError
 
 class ErrorHandlingSpec extends CatsEffectSuite {
@@ -51,7 +51,7 @@ class ErrorHandlingSpec extends CatsEffectSuite {
       mw.orNotFound.run(Request[IO](Method.GET, uri"/x")).flatMap { resp =>
         for {
           body <- resp.as[String]
-          lg <- logged.get
+          lg   <- logged.get
         } yield {
           assertEquals(resp.status.code, 500)
           assertEquals(
@@ -82,4 +82,5 @@ class ErrorHandlingSpec extends CatsEffectSuite {
       }
     }
   }
+
 }

@@ -1,12 +1,13 @@
 package app.http
 
-import auth.dpop.{DpopConfig, DpopNonceValidator, DpopVerifier}
-import auth.revocation.{TokenDenylist, TokenIntrospection}
-import auth.accesstoken.AccessTokenValidator
-import auth.{AccessTokenAuth, AuthEvents, AuthTelemetry}
 import cats.effect.{Async, Resource}
 import cats.syntax.all.*
 import fs2.io.net.Network
+
+import auth.{AccessTokenAuth, AuthEvents, AuthTelemetry}
+import auth.accesstoken.AccessTokenValidator
+import auth.dpop.{DpopConfig, DpopNonceValidator, DpopVerifier}
+import auth.revocation.{TokenDenylist, TokenIntrospection}
 import org.http4s.ember.client.EmberClientBuilder
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.server.Server as Http4sServer
@@ -21,23 +22,22 @@ object Server {
 
   private val log = LoggerFactory.getLogger(getClass)
 
-  /** @param singleUseChecker
-    *   DPoP proof `jti` single-use checker. Default `None` uses Nimbus's
-    *   per-node in-memory checker — correct and cheapest for a single node.
-    *   Behind a load balancer, inject a shared-store checker (see
-    *   [[app.MultiNodeMain]]) so a replayed jti is caught on whichever node it
-    *   lands on.
+  /**
+    * @param singleUseChecker
+    *   DPoP proof `jti` single-use checker. Default `None` uses Nimbus's per-node in-memory checker
+    *   — correct and cheapest for a single node. Behind a load balancer, inject a shared-store
+    *   checker (see [[app.MultiNodeMain]]) so a replayed jti is caught on whichever node it lands
+    *   on.
     * @param nonceOverride
-    *   explicit DPoP nonce validator; overrides the config-driven stateless
-    *   default. Used for the alternative nonce-anchored replay posture (see
-    *   [[app.MultiNodeMain]]).
+    *   explicit DPoP nonce validator; overrides the config-driven stateless default. Used for the
+    *   alternative nonce-anchored replay posture (see [[app.MultiNodeMain]]).
     * @param events
     *   observability sink for every auth decision; compose with
     *   `AuthEvents.combine(AuthEvents.slf4j, otelSink)` for logs + metrics
     * @param telemetry
-    *   latency and dependency-health instrumentation for the auth path
-    *   (validation, denylist, introspection, JWKS). Defaults to
-    *   [[auth.AuthTelemetry.noop]]; pass [[auth.AuthTelemetry.otel]] to record.
+    *   latency and dependency-health instrumentation for the auth path (validation, denylist,
+    *   introspection, JWKS). Defaults to [[auth.AuthTelemetry.noop]]; pass
+    *   [[auth.AuthTelemetry.otel]] to record.
     */
   def resource[F[_]: Async: Network: Tracer](
       cfg: AppConfig,
@@ -52,35 +52,35 @@ object Server {
 
       // Before anything binds: a node whose schema is behind must not serve.
       _ <- Resource.eval(
-        Async[F].whenA(cfg.db.migrateOnStart)(
-          Database.migrate[F](ds, cfg.db.baselineOnMigrate)
-        )
-      )
+             Async[F].whenA(cfg.db.migrateOnStart)(
+               Database.migrate[F](ds, cfg.db.baselineOnMigrate)
+             )
+           )
 
       // RFC 7662 revocation via the AS (fail closed); owns its pooled client.
       introspection <- cfg.auth.introspection.toIntrospectionConfig match {
-        case None => Resource.pure[F, Option[TokenIntrospection[F]]](None)
-        case Some(config) =>
-          EmberClientBuilder
-            .default[F]
-            .build
-            .evalMap(TokenIntrospection.http4s[F](config, _))
-            .map(Some(_))
-      }
+                         case None         => Resource.pure[F, Option[TokenIntrospection[F]]](None)
+                         case Some(config) =>
+                           EmberClientBuilder
+                             .default[F]
+                             .build
+                             .evalMap(TokenIntrospection.http4s[F](config, _))
+                             .map(Some(_))
+                       }
 
       // The validator instruments what it is given, so the denylist, the
       // introspection client and Nimbus's JWKS cache are all covered from this
       // one wiring point.
       validator <- Resource.eval(
-        AccessTokenValidator
-          .default[F](
-            cfg.auth.toAccessTokenConfig,
-            events,
-            denylist,
-            introspection,
-            telemetry
-          )
-      )
+                     AccessTokenValidator
+                       .default[F](
+                         cfg.auth.toAccessTokenConfig,
+                         events,
+                         denylist,
+                         introspection,
+                         telemetry
+                       )
+                   )
 
       // Stateless (Duende-pattern) nonces: multi-node with a shared key, no
       // store. Without configured key material, fall back to an ephemeral
@@ -89,31 +89,31 @@ object Server {
       // the alternative nonce-anchored replay posture (a stateful, single-use
       // RedisDpopNonceStore instead of a shared jti set).
       dpopNonceValidator <- nonceOverride match {
-        case injected @ Some(_) =>
-          Resource.pure[F, Option[DpopNonceValidator[F]]](injected)
-        case None =>
-          if (cfg.auth.dpop.enabled && cfg.auth.dpop.nonce.enabled)
-            Resource.eval(
-              (cfg.auth.dpop.nonce.decodedKey match {
-                case Some(key) => key.pure[F]
-                case None      =>
-                  Async[F].delay(
-                    log.warn(
-                      "No dpop.nonce.key configured — using an ephemeral key. " +
-                        "Nonces will not validate across nodes or restarts; " +
-                        "set DPOP_NONCE_KEY in production."
-                    )
-                  ) *> DpopNonceValidator.randomKey[F]
-              }).flatMap(key =>
-                DpopNonceValidator.stateless[F](
-                  key,
-                  cfg.auth.dpop.nonce.decodedPreviousKeys,
-                  cfg.auth.dpop.nonce.lifetime
-                )
-              ).map(Some(_))
-            )
-          else Resource.pure[F, Option[DpopNonceValidator[F]]](None)
-      }
+                              case injected @ Some(_) =>
+                                Resource.pure[F, Option[DpopNonceValidator[F]]](injected)
+                              case None =>
+                                if (cfg.auth.dpop.enabled && cfg.auth.dpop.nonce.enabled)
+                                  Resource.eval(
+                                    (cfg.auth.dpop.nonce.decodedKey match {
+                                      case Some(key) => key.pure[F]
+                                      case None      =>
+                                        Async[F].delay(
+                                          log.warn(
+                                            "No dpop.nonce.key configured — using an ephemeral key. " +
+                                              "Nonces will not validate across nodes or restarts; " +
+                                              "set DPOP_NONCE_KEY in production."
+                                          )
+                                        ) *> DpopNonceValidator.randomKey[F]
+                                    }).flatMap(key =>
+                                      DpopNonceValidator.stateless[F](
+                                        key,
+                                        cfg.auth.dpop.nonce.decodedPreviousKeys,
+                                        cfg.auth.dpop.nonce.lifetime
+                                      )
+                                    ).map(Some(_))
+                                  )
+                                else Resource.pure[F, Option[DpopNonceValidator[F]]](None)
+                            }
 
       dpopVerifier <-
         if (cfg.auth.dpop.enabled)
@@ -136,13 +136,14 @@ object Server {
           .middleware[F](validator, events, dpopVerifier = dpopVerifier)
       httpApp = HttpApi.httpApp[F](Database.ping[F](ds), authMw)
       server <- EmberServerBuilder
-        .default[F]
-        .withHost(cfg.http.host)
-        .withPort(cfg.http.port)
-        .withHttpApp(httpApp)
-        .withIdleTimeout(cfg.http.idleTimeout)
-        .withShutdownTimeout(cfg.http.shutdownTimeout)
-        .withMaxConnections(cfg.http.maxConnections)
-        .build
+                  .default[F]
+                  .withHost(cfg.http.host)
+                  .withPort(cfg.http.port)
+                  .withHttpApp(httpApp)
+                  .withIdleTimeout(cfg.http.idleTimeout)
+                  .withShutdownTimeout(cfg.http.shutdownTimeout)
+                  .withMaxConnections(cfg.http.maxConnections)
+                  .build
     } yield server
+
 }

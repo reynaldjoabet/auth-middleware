@@ -1,31 +1,34 @@
 package auth
 package dpop
 
-import auth.dpop.{DpopConfig, DpopProofValidator, DpopVerifier}
-
 import java.util.{Date, UUID}
 
 import scala.concurrent.duration.*
 
 import cats.effect.IO
-import com.nimbusds.jose.crypto.{ECDSASigner, RSASSASigner}
-import com.nimbusds.jose.jwk.JWKSet
-import com.nimbusds.jose.jwk.source.ImmutableJWKSet
-import com.nimbusds.jose.proc.SecurityContext
+
+import auth.dpop.{DpopConfig, DpopProofValidator, DpopVerifier}
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
+import com.nimbusds.jose.crypto.{ECDSASigner, RSASSASigner}
+import com.nimbusds.jose.jwk.source.ImmutableJWKSet
+import com.nimbusds.jose.jwk.JWKSet
+import com.nimbusds.jose.proc.SecurityContext
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import munit.CatsEffectSuite
 
 class DpopProofValidatorSpec extends CatsEffectSuite {
+
   import TestTokens.*
 
   private val validator =
     DpopProofValidator.default[IO](DpopConfig(), AuthEvents.noop[IO])
 
   private val accessToken = sign(dpopBoundClaims())
-  private val htu = "https://api.test.example/accounts"
+  private val htu         = "https://api.test.example/accounts"
 
-  /** Proof claims with each DPoP claim individually omittable. */
+  /**
+    * Proof claims with each DPoP claim individually omittable.
+    */
   private def proofClaims(
       ath: Option[String] = Some(DpopVerifier.accessTokenHash(accessToken)),
       htm: Option[String] = Some("GET"),
@@ -40,14 +43,16 @@ class DpopProofValidatorSpec extends CatsEffectSuite {
     b.build()
   }
 
-  /** Sign proof claims ES256, optionally omitting the header `jwk`. */
+  /**
+    * Sign proof claims ES256, optionally omitting the header `jwk`.
+    */
   private def signProof(
       claimsSet: JWTClaimsSet,
       includeJwk: Boolean = true
   ): String = {
     val base = new JWSHeader.Builder(JWSAlgorithm.ES256)
       .`type`(new JOSEObjectType("dpop+jwt"))
-    val hb = if (includeJwk) base.jwk(dpopKey.toPublicJWK) else base
+    val hb  = if (includeJwk) base.jwk(dpopKey.toPublicJWK) else base
     val jwt = new SignedJWT(hb.build(), claimsSet)
     jwt.sign(new ECDSASigner(dpopKey))
     jwt.serialize()
@@ -81,7 +86,7 @@ class DpopProofValidatorSpec extends CatsEffectSuite {
   test("rejects a proof signed by a key other than its header key") {
     // header carries dpopKey's public JWK, signature is rogueDpopKey's
     val forged = {
-      val good = dpopProof("GET", htu, accessToken)
+      val good  = dpopProof("GET", htu, accessToken)
       val rogue = dpopProof("GET", htu, accessToken, key = rogueDpopKey)
       good.substring(0, good.lastIndexOf('.')) +
         rogue.substring(rogue.lastIndexOf('.'))
@@ -144,9 +149,8 @@ class DpopProofValidatorSpec extends CatsEffectSuite {
   }
 
   test("rejects a proof whose header carries no jwk") {
-    validator.validate(signProof(proofClaims(), includeJwk = false)).map {
-      result =>
-        assertEquals(result, Left(AuthError.InvalidDpopProof.Rejected))
+    validator.validate(signProof(proofClaims(), includeJwk = false)).map { result =>
+      assertEquals(result, Left(AuthError.InvalidDpopProof.Rejected))
     }
   }
 
@@ -190,4 +194,5 @@ class DpopProofValidatorSpec extends CatsEffectSuite {
         assertEquals(result, Left(AuthError.InvalidDpopProof.Rejected))
       }
   }
+
 }

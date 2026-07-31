@@ -1,30 +1,31 @@
 package auth
 package dpop
 
+import cats.effect.kernel.Resource
+import cats.effect.IO
+
 import auth.accesstoken.*
 import auth.dpop.{DpopConfig, DpopNonceValidator, DpopVerifier}
 import auth.revocation.TokenDenylist
-
-import cats.effect.IO
-import cats.effect.kernel.Resource
 import io.github.iltotore.iron.*
 import munit.CatsEffectSuite
+import org.http4s.dsl.Http4sDsl
+import org.http4s.implicits.*
 import org.http4s.AuthedRoutes
 import org.http4s.HttpApp
 import org.http4s.Method
 import org.http4s.Request
 import org.http4s.Response
-import org.http4s.dsl.Http4sDsl
-import org.http4s.implicits.*
 import org.typelevel.ci.*
 
-/** Shared fixtures for the DPoP suites: a validator over the test JWKS, a
-  * trivial protected route, and helpers to build DPoP requests and read
-  * challenge headers. [[DpopVerifierSpec]], [[DpopNonceValidatorSpec]] and
-  * [[DpopNonceStoreSpec]] extend this, mirroring the split between
+/**
+  * Shared fixtures for the DPoP suites: a validator over the test JWKS, a trivial protected route,
+  * and helpers to build DPoP requests and read challenge headers. [[DpopVerifierSpec]],
+  * [[DpopNonceValidatorSpec]] and [[DpopNonceStoreSpec]] extend this, mirroring the split between
   * `DpopVerifier`, `DpopNonceValidator` and `DpopNonceStore`.
   */
 abstract class DpopBaseSuite extends CatsEffectSuite {
+
   import TestTokens.*
 
   protected object dsl extends Http4sDsl[IO]
@@ -44,8 +45,9 @@ abstract class DpopBaseSuite extends CatsEffectSuite {
     case GET -> Root / "accounts" as ctx => Ok(ctx.subject.value: String)
   }
 
-  /** The middleware stack under test. `nonces` switches on RFC 9449 §8-9
-    * server-provided nonce enforcement.
+  /**
+    * The middleware stack under test. `nonces` switches on RFC 9449 §8-9 server-provided nonce
+    * enforcement.
     */
   protected def app(
       policy: SenderConstraintPolicy = SenderConstraintPolicy.EnforceWhenBound,
@@ -90,4 +92,5 @@ abstract class DpopBaseSuite extends CatsEffectSuite {
 
   protected def nonceOf(resp: Response[IO]): String =
     resp.headers.get(ci"DPoP-Nonce").map(_.head.value).getOrElse("")
+
 }

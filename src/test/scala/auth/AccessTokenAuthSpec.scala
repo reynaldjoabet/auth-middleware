@@ -1,16 +1,19 @@
 package auth
 
+import cats.effect.IO
+
 import auth.accesstoken.*
 import auth.revocation.TokenDenylist
-
-import cats.effect.IO
-import com.nimbusds.jose.KeySourceException
+import com.nimbusds.jose.jwk.source.JWKSource
 import com.nimbusds.jose.jwk.JWK
 import com.nimbusds.jose.jwk.JWKSelector
-import com.nimbusds.jose.jwk.source.JWKSource
 import com.nimbusds.jose.proc.SecurityContext
+import com.nimbusds.jose.KeySourceException
 import io.github.iltotore.iron.*
 import munit.CatsEffectSuite
+import org.http4s.dsl.Http4sDsl
+import org.http4s.headers.Authorization
+import org.http4s.implicits.*
 import org.http4s.AuthScheme
 import org.http4s.AuthedRoutes
 import org.http4s.BasicCredentials
@@ -18,12 +21,10 @@ import org.http4s.Credentials
 import org.http4s.Method
 import org.http4s.Request
 import org.http4s.Status
-import org.http4s.dsl.Http4sDsl
-import org.http4s.headers.Authorization
-import org.http4s.implicits.*
 import org.typelevel.ci.*
 
 class AccessTokenAuthSpec extends CatsEffectSuite {
+
   import TestTokens.*
 
   private object dsl extends Http4sDsl[IO]
@@ -77,6 +78,7 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
   private val acrApp = authMiddleware(
     AccessTokenAuth.requireAcr[IO](sca)(paymentRoutes)
   ).orNotFound
+
   // strength + freshness, composed
   private def freshAcrApp(maxAge: MaxAuthAge) =
     authMiddleware(
@@ -84,6 +86,7 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
         AccessTokenAuth.requireFreshAuth[IO](maxAge)(paymentRoutes)
       )
     ).orNotFound
+
   // freshness only (any acr)
   private def freshApp(maxAge: MaxAuthAge) =
     authMiddleware(
@@ -136,9 +139,7 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
       Method.GET,
       uri"/".withPath(org.http4s.Uri.Path.unsafeFromString(path))
     )
-    token.fold(req)(t =>
-      req.putHeaders(Authorization(Credentials.Token(AuthScheme.Bearer, t)))
-    )
+    token.fold(req)(t => req.putHeaders(Authorization(Credentials.Token(AuthScheme.Bearer, t))))
   }
 
   private def payment(token: String) =
@@ -195,15 +196,14 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
   }
 
   test("401 invalid_token for a forged token, without echoing detail") {
-    app.run(get("/accounts", Some(sign(claims(), key = rogueKey)))).flatMap {
-      resp =>
-        assertEquals(resp.status, Status.Unauthorized)
-        resp.as[String].map { body =>
-          assertEquals(
-            body,
-            """{"error":"invalid_token","error_description":"token signature, type or claims validation failed"}"""
-          )
-        }
+    app.run(get("/accounts", Some(sign(claims(), key = rogueKey)))).flatMap { resp =>
+      assertEquals(resp.status, Status.Unauthorized)
+      resp.as[String].map { body =>
+        assertEquals(
+          body,
+          """{"error":"invalid_token","error_description":"token signature, type or claims validation failed"}"""
+        )
+      }
     }
   }
 
@@ -230,7 +230,7 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
 
   test("200 when the token carries the required scope") {
     val token = sign(claims(scope = Some("payments:write accounts:read")))
-    val req = Request[IO](Method.POST, uri"/payments")
+    val req   = Request[IO](Method.POST, uri"/payments")
       .putHeaders(Authorization(Credentials.Token(AuthScheme.Bearer, token)))
     paymentsApp.run(req).map(resp => assertEquals(resp.status, Status.Ok))
   }
@@ -247,14 +247,14 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
 
   test("200 when the token carries all of several required scopes") {
     val token = sign(claims(scope = Some("accounts:read payments:write")))
-    val req = Request[IO](Method.POST, uri"/payments")
+    val req   = Request[IO](Method.POST, uri"/payments")
       .putHeaders(Authorization(Credentials.Token(AuthScheme.Bearer, token)))
     multiScopeApp.run(req).map(resp => assertEquals(resp.status, Status.Ok))
   }
 
   test("403 when the token is missing one of several required scopes") {
     val token = sign(claims(scope = Some("payments:write")))
-    val req = Request[IO](Method.POST, uri"/payments")
+    val req   = Request[IO](Method.POST, uri"/payments")
       .putHeaders(Authorization(Credentials.Token(AuthScheme.Bearer, token)))
     multiScopeApp.run(req).map { resp =>
       assertEquals(resp.status, Status.Forbidden)
@@ -337,7 +337,7 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
       AuthEvents.noop[IO],
       TokenDenylist.none[IO]
     )
-    val downMw = AccessTokenAuth.middleware(downValidator, AuthEvents.noop[IO])
+    val downMw  = AccessTokenAuth.middleware(downValidator, AuthEvents.noop[IO])
     val downApp = downMw(routes).orNotFound
     downApp.run(get("/accounts", Some(sign(claims())))).map { resp =>
       assertEquals(resp.status, Status.ServiceUnavailable)
@@ -617,15 +617,14 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
   }
 
   test("requireUser rejects an M2M token (sub == client_id)") {
-    userApp.run(get("/accounts", Some(sign(claims(sub = "mobile-app"))))).map {
-      resp =>
-        assertEquals(resp.status, Status.Unauthorized)
-        val challenge =
-          resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
-        assert(
-          challenge.contains("""error="insufficient_user_authentication""""),
-          challenge
-        )
+    userApp.run(get("/accounts", Some(sign(claims(sub = "mobile-app"))))).map { resp =>
+      assertEquals(resp.status, Status.Unauthorized)
+      val challenge =
+        resp.headers.get(ci"WWW-Authenticate").map(_.head.value).getOrElse("")
+      assert(
+        challenge.contains("""error="insufficient_user_authentication""""),
+        challenge
+      )
     }
   }
 
@@ -640,8 +639,8 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
       rejected <- app.run(get("/accounts", Some(sign(claims()))))
       // carries an acr -> admitted by the override
       admitted <- app.run(
-        get("/accounts", Some(sign(acrClaims(Some("loa1"), 1.minute))))
-      )
+                    get("/accounts", Some(sign(acrClaims(Some("loa1"), 1.minute))))
+                  )
     } yield {
       assertEquals(rejected.status, Status.Unauthorized)
       assertError(rejected, "insufficient_user_authentication")
@@ -772,4 +771,5 @@ class AccessTokenAuthSpec extends CatsEffectSuite {
       assertError(resp, "insufficient_scope")
     }
   }
+
 }

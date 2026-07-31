@@ -1,25 +1,27 @@
 package auth
 package revocation
 
-import auth.accesstoken.*
-import auth.revocation.{TokenDenylist, TokenIntrospection}
-
 import scala.concurrent.duration.*
 
 import cats.effect.{IO, Ref}
+
+import auth.accesstoken.*
+import auth.revocation.{TokenDenylist, TokenIntrospection}
 import io.circe.Json
 import munit.CatsEffectSuite
+import org.http4s.{BasicCredentials, HttpApp, Response, Status, UrlForm}
 import org.http4s.circe.*
 import org.http4s.client.Client
 import org.http4s.headers.Authorization
 import org.http4s.implicits.*
-import org.http4s.{BasicCredentials, HttpApp, Response, Status, UrlForm}
 
-/** RFC 7662 introspection as the Redis-free revocation path (the Duende
-  * pattern). Exercises the wire protocol (form POST, Basic auth), the
-  * fail-closed mapping, the definitive-answer cache, and the validator wiring.
+/**
+  * RFC 7662 introspection as the Redis-free revocation path (the Duende pattern). Exercises the
+  * wire protocol (form POST, Basic auth), the fail-closed mapping, the definitive-answer cache, and
+  * the validator wiring.
   */
 class TokenIntrospectionSpec extends CatsEffectSuite {
+
   import TokenIntrospection.{IntrospectionConfig, Result}
 
   private val cfg = IntrospectionConfig(
@@ -28,8 +30,9 @@ class TokenIntrospectionSpec extends CatsEffectSuite {
     clientSecret = "s3cret"
   )
 
-  /** Stub AS: rejects bad client credentials, then answers per `respond` over
-    * the submitted `token` form field, counting upstream calls.
+  /**
+    * Stub AS: rejects bad client credentials, then answers per `respond` over the submitted `token`
+    * form field, counting upstream calls.
     */
   private def stubClient(
       calls: Ref[IO, Int],
@@ -58,39 +61,39 @@ class TokenIntrospectionSpec extends CatsEffectSuite {
 
   test("an active token is Active (auth + form field verified by the stub)") {
     for {
-      calls <- Ref.of[IO, Int](0)
+      calls         <- Ref.of[IO, Int](0)
       introspection <- TokenIntrospection.http4s[IO](
-        cfg,
-        stubClient(
-          calls,
-          token =>
-            if (token == "the-token") activeAnswer(true)
-            else activeAnswer(false)
-        )
-      )
+                         cfg,
+                         stubClient(
+                           calls,
+                           token =>
+                             if (token == "the-token") activeAnswer(true)
+                             else activeAnswer(false)
+                         )
+                       )
       result <- introspection.check("the-token")
     } yield assertEquals(result, Result.Active)
   }
 
   test("active=false is Inactive") {
     for {
-      calls <- Ref.of[IO, Int](0)
+      calls         <- Ref.of[IO, Int](0)
       introspection <- TokenIntrospection
-        .http4s[IO](cfg, stubClient(calls, _ => activeAnswer(false)))
+                         .http4s[IO](cfg, stubClient(calls, _ => activeAnswer(false)))
       result <- introspection.check("t")
     } yield assertEquals(result, Result.Inactive)
   }
 
   test("a 5xx from the endpoint is Unavailable (fail closed upstream)") {
     for {
-      calls <- Ref.of[IO, Int](0)
+      calls         <- Ref.of[IO, Int](0)
       introspection <- TokenIntrospection.http4s[IO](
-        cfg,
-        stubClient(
-          calls,
-          _ => IO.pure(Response[IO](Status.InternalServerError))
-        )
-      )
+                         cfg,
+                         stubClient(
+                           calls,
+                           _ => IO.pure(Response[IO](Status.InternalServerError))
+                         )
+                       )
       result <- introspection.check("t")
     } yield assertEquals(result, Result.Unavailable)
   }
@@ -99,37 +102,37 @@ class TokenIntrospectionSpec extends CatsEffectSuite {
     "a stalled endpoint hits the request timeout and is Unavailable — no pinned request threads"
   ) {
     for {
-      calls <- Ref.of[IO, Int](0)
+      calls         <- Ref.of[IO, Int](0)
       introspection <- TokenIntrospection.http4s[IO](
-        cfg.copy(requestTimeout = 100.millis),
-        stubClient(calls, _ => IO.never)
-      )
+                         cfg.copy(requestTimeout = 100.millis),
+                         stubClient(calls, _ => IO.never)
+                       )
       result <- introspection.check("t")
     } yield assertEquals(result, Result.Unavailable)
   }
 
   test("an unparsable body is Unavailable, not accepted") {
     for {
-      calls <- Ref.of[IO, Int](0)
+      calls         <- Ref.of[IO, Int](0)
       introspection <- TokenIntrospection.http4s[IO](
-        cfg,
-        stubClient(
-          calls,
-          _ => IO.pure(Response[IO](Status.Ok).withEntity("not json"))
-        )
-      )
+                         cfg,
+                         stubClient(
+                           calls,
+                           _ => IO.pure(Response[IO](Status.Ok).withEntity("not json"))
+                         )
+                       )
       result <- introspection.check("t")
     } yield assertEquals(result, Result.Unavailable)
   }
 
   test("definitive answers are cached: one upstream call for two checks") {
     for {
-      calls <- Ref.of[IO, Int](0)
+      calls         <- Ref.of[IO, Int](0)
       introspection <- TokenIntrospection
-        .http4s[IO](cfg, stubClient(calls, _ => activeAnswer(true)))
-      first <- introspection.check("t")
+                         .http4s[IO](cfg, stubClient(calls, _ => activeAnswer(true)))
+      first  <- introspection.check("t")
       second <- introspection.check("t")
-      count <- calls.get
+      count  <- calls.get
     } yield {
       assertEquals(first, Result.Active)
       assertEquals(second, Result.Active)
@@ -139,23 +142,23 @@ class TokenIntrospectionSpec extends CatsEffectSuite {
 
   test("Unavailable is never cached: the next check goes back to the network") {
     for {
-      calls <- Ref.of[IO, Int](0)
-      healthy <- Ref.of[IO, Boolean](false)
+      calls         <- Ref.of[IO, Int](0)
+      healthy       <- Ref.of[IO, Boolean](false)
       introspection <- TokenIntrospection.http4s[IO](
-        cfg,
-        stubClient(
-          calls,
-          _ =>
-            healthy.get.flatMap {
-              case true  => activeAnswer(true)
-              case false => IO.pure(Response[IO](Status.BadGateway))
-            }
-        )
-      )
-      first <- introspection.check("t")
-      _ <- healthy.set(true)
+                         cfg,
+                         stubClient(
+                           calls,
+                           _ =>
+                             healthy.get.flatMap {
+                               case true  => activeAnswer(true)
+                               case false => IO.pure(Response[IO](Status.BadGateway))
+                             }
+                         )
+                       )
+      first  <- introspection.check("t")
+      _      <- healthy.set(true)
       second <- introspection.check("t")
-      count <- calls.get
+      count  <- calls.get
     } yield {
       assertEquals(first, Result.Unavailable)
       assertEquals(second, Result.Active)
@@ -165,13 +168,13 @@ class TokenIntrospectionSpec extends CatsEffectSuite {
 
   test("cacheTtl = 0 disables caching") {
     for {
-      calls <- Ref.of[IO, Int](0)
+      calls         <- Ref.of[IO, Int](0)
       introspection <- TokenIntrospection.http4s[IO](
-        cfg.copy(cacheTtl = Duration.Zero),
-        stubClient(calls, _ => activeAnswer(true))
-      )
-      _ <- introspection.check("t")
-      _ <- introspection.check("t")
+                         cfg.copy(cacheTtl = Duration.Zero),
+                         stubClient(calls, _ => activeAnswer(true))
+                       )
+      _     <- introspection.check("t")
+      _     <- introspection.check("t")
       count <- calls.get
     } yield assertEquals(count, 2)
   }
@@ -221,4 +224,5 @@ class TokenIntrospectionSpec extends CatsEffectSuite {
         )
       )
   }
+
 }

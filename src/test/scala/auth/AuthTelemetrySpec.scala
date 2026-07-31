@@ -2,24 +2,25 @@ package auth
 
 import cats.effect.IO
 import cats.syntax.all.*
-import com.nimbusds.jose.KeySourceException
-import com.nimbusds.jose.jwk.source.JWKSource
+
 import com.nimbusds.jose.jwk.{JWK, JWKSelector}
+import com.nimbusds.jose.jwk.source.JWKSource
 import com.nimbusds.jose.proc.SecurityContext
+import com.nimbusds.jose.KeySourceException
 import munit.CatsEffectSuite
 import org.typelevel.otel4s.metrics.Meter
 import org.typelevel.otel4s.trace.Tracer
-
 import auth.accesstoken.AccessTokenValidator
 import auth.revocation.{TokenDenylist, TokenIntrospection}
 
-/** Instrumentation must be observationally invisible: same values, same errors,
-  * same failure modes. A telemetry decorator that swallowed a denylist error or
-  * changed an [[AuthError]] would turn an observability feature into a security
-  * bug, so every port is checked through the instrumented path.
+/**
+  * Instrumentation must be observationally invisible: same values, same errors, same failure modes.
+  * A telemetry decorator that swallowed a denylist error or changed an [[AuthError]] would turn an
+  * observability feature into a security bug, so every port is checked through the instrumented
+  * path.
   *
-  * `Meter.noop` and `Tracer.noop` keep the assertions on behaviour rather than
-  * on emitted measurements — recording is otel4s's job, not this codebase's.
+  * `Meter.noop` and `Tracer.noop` keep the assertions on behaviour rather than on emitted
+  * measurements — recording is otel4s's job, not this codebase's.
   */
 class AuthTelemetrySpec extends CatsEffectSuite {
 
@@ -71,9 +72,7 @@ class AuthTelemetrySpec extends CatsEffectSuite {
           telemetry
         )
         .validate(sign(claims()))
-        .map(result =>
-          assertEquals(result, Left(AuthError.ValidationUnavailable))
-        )
+        .map(result => assertEquals(result, Left(AuthError.ValidationUnavailable)))
     }
   }
 
@@ -84,7 +83,7 @@ class AuthTelemetrySpec extends CatsEffectSuite {
     instrumented { telemetry =>
       for {
         yes <- telemetry.instrumentDenylist(fixed(true)).isRevoked("jti")
-        no <- telemetry.instrumentDenylist(fixed(false)).isRevoked("jti")
+        no  <- telemetry.instrumentDenylist(fixed(false)).isRevoked("jti")
       } yield {
         assert(yes)
         assert(!no)
@@ -128,7 +127,8 @@ class AuthTelemetrySpec extends CatsEffectSuite {
 
   test("noop hands every port back untouched") {
     val telemetry = AuthTelemetry.noop[IO]
-    val denylist = TokenDenylist.none[IO]
+    val denylist  = TokenDenylist.none[IO]
     assert(telemetry.instrumentDenylist(denylist) eq denylist)
   }
+
 }

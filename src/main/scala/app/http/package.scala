@@ -1,13 +1,16 @@
 package app.http
 
+import scala.util.control.NonFatal
+
 import cats.effect.IO
+
 import com.github.plokhotnyuk.jsoniter_scala.core.*
 import org.http4s.*
 import org.http4s.headers.`Content-Type`
 
-import scala.util.control.NonFatal
-
-/** Bridges jsoniter-scala codecs into http4s entity (de)serialisation. */
+/**
+  * Bridges jsoniter-scala codecs into http4s entity (de)serialisation.
+  */
 
 given [A](using JsonValueCodec[A]): EntityDecoder[IO, A] =
   EntityDecoder.byteArrayDecoder[IO].flatMapR { bytes =>

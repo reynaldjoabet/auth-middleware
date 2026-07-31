@@ -1,25 +1,26 @@
 package auth
 package mtls
 
-import auth.accesstoken.*
-import auth.revocation.TokenDenylist
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
 import cats.effect.IO
+
+import auth.accesstoken.*
+import auth.revocation.TokenDenylist
 import io.github.iltotore.iron.*
 import munit.CatsEffectSuite
+import org.http4s.dsl.Http4sDsl
+import org.http4s.implicits.*
 import org.http4s.AuthedRoutes
 import org.http4s.Header
 import org.http4s.Method
 import org.http4s.Request
 import org.http4s.Status
-import org.http4s.dsl.Http4sDsl
-import org.http4s.implicits.*
 import org.typelevel.ci.*
 
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
-
 class MtlsSpec extends CatsEffectSuite {
+
   import TestTokens.*
 
   private object dsl extends Http4sDsl[IO]
@@ -27,6 +28,7 @@ class MtlsSpec extends CatsEffectSuite {
 
   private val clientCert =
     Mtls.parsePem(clientCertPem).getOrElse(fail("test cert must parse"))
+
   private val x5tS256 = Mtls.thumbprint(clientCert)
 
   private val validator =
@@ -112,7 +114,7 @@ class MtlsSpec extends CatsEffectSuite {
 
   test("an unparseable forwarded certificate fails closed") {
     val token = sign(mtlsBoundClaims(x5tS256))
-    val req = request(token, None)
+    val req   = request(token, None)
       .putHeaders(Header.Raw(ci"X-Forwarded-Client-Cert", "not-a-certificate"))
     app().run(req).map(resp => assertEquals(resp.status, Status.Unauthorized))
   }
@@ -157,4 +159,5 @@ class MtlsSpec extends CatsEffectSuite {
       resp.as[String].assertEquals("user-123")
     }
   }
+
 }

@@ -1,11 +1,11 @@
 package app.config
 
 import scala.concurrent.duration.FiniteDuration
+
 import _root_.pureconfig.ConfigReader
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
 import io.github.iltotore.iron.pureconfig.given
-
 import sage.client.{
   AuthConfig as SageAuth,
   Endpoint,
@@ -16,21 +16,25 @@ import sage.client.{
   WatchdogConfig
 }
 
-/** Standalone (one server) or cluster (seed list, topology discovered). */
+/**
+  * Standalone (one server) or cluster (seed list, topology discovered).
+  */
 enum RedisMode derives CanEqual {
   case Standalone, Cluster
 }
 
 object RedisMode {
+
   // `derives ConfigReader` on an enum produces a coproduct reader that expects
   // an OBJECT ({ standalone {} }); the config writes plain strings
   // (`mode = standalone`), which needs the enumeration form.
   given ConfigReader[RedisMode] =
     _root_.pureconfig.generic.semiauto.deriveEnumerationReader
+
 }
 
-/** A single Redis/Valkey address; refined so a blank host or out-of-range port
-  * fails the boot.
+/**
+  * A single Redis/Valkey address; refined so a blank host or out-of-range port fails the boot.
   */
 final case class RedisEndpoint(
     host: String :| Not[Blank],
@@ -39,12 +43,12 @@ final case class RedisEndpoint(
   def toEndpoint: Endpoint = Endpoint(host, port)
 }
 
-/** The environment-driven Redis configuration, mapped to a Sage [[SageConfig]].
+/**
+  * The environment-driven Redis configuration, mapped to a Sage [[SageConfig]].
   *
-  * Only the deployment-specific knobs are exposed; Sage's own defaults cover
-  * the rest (reconnect backoff, dedicated pool, client-side cache). `password`
-  * is optional so local/dev can connect unauthenticated, but TLS + auth are the
-  * expected production posture.
+  * Only the deployment-specific knobs are exposed; Sage's own defaults cover the rest (reconnect
+  * backoff, dedicated pool, client-side cache). `password` is optional so local/dev can connect
+  * unauthenticated, but TLS + auth are the expected production posture.
   */
 final case class RedisSettings(
     mode: RedisMode,
@@ -77,7 +81,7 @@ final case class RedisSettings(
   )
 
   def toSageConfig: SageConfig = {
-    val seeds = nodes.map(_.toEndpoint).toVector
+    val seeds    = nodes.map(_.toEndpoint).toVector
     val topology = mode match {
       // `seeds` is non-empty (MinLength[1]) and standalone is exactly one node.
       case RedisMode.Standalone => Topology.Standalone(seeds.head)
@@ -85,14 +89,13 @@ final case class RedisSettings(
     }
     SageConfig(
       connectTimeout = connectTimeout,
-      watchdog =
-        WatchdogConfig(pingInterval = pingInterval, pingTimeout = pingTimeout),
-      auth =
-        password.map(pw => SageAuth(password = pw.value, username = username)),
+      watchdog = WatchdogConfig(pingInterval = pingInterval, pingTimeout = pingTimeout),
+      auth = password.map(pw => SageAuth(password = pw.value, username = username)),
       tls = Option.when(tls)(TlsConfig(TrustSource.System)),
       topology = topology,
       database = database,
       clientName = Some(clientName)
     )
   }
+
 }

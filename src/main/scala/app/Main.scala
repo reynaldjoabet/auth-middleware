@@ -1,40 +1,43 @@
 package app
 
-import auth.{AuthEvents, AuthTelemetry}
+import scala.concurrent.duration.*
+
 import cats.effect.{IO, IOApp, Resource}
 import cats.effect.unsafe.IORuntimeConfig
+
+import auth.{AuthEvents, AuthTelemetry}
 import org.http4s.server.Server as Http4sServer
 import org.slf4j.LoggerFactory
 import org.typelevel.otel4s.oteljava.OtelJava
 import org.typelevel.otel4s.trace.Tracer
 import sage.backend.SageClient
-import scala.concurrent.duration.*
-import app.config.{AppConfigLoader, AppConfig}
+import app.config.{AppConfig, AppConfigLoader}
 import app.http.Server
 import app.infra.redis.RedisTokenDenylist
+
 object Main extends IOApp.Simple {
 
   private val log = LoggerFactory.getLogger(getClass)
 
-  override protected def runtimeConfig: IORuntimeConfig =
+  protected override def runtimeConfig: IORuntimeConfig =
     super.runtimeConfig.copy(cpuStarvationCheckInterval = 10.seconds)
 
   // The whole app as one Resource: Redis client → DB pool → token validator →
   // Ember, released in reverse on SIGTERM.
   private def app(cfg: AppConfig): Resource[IO, Http4sServer] =
     for {
-      redis <- SageClient.resource(cfg.redis.toSageConfig)
+      redis   <- SageClient.resource(cfg.redis.toSageConfig)
       denylist = RedisTokenDenylist[IO](redis)
       // GlobalOpenTelemetry, autoconfigured via the
       // -Dotel.java.global-autoconfigure.enabled=true javaOption; noop when no
       // exporter is configured, so local runs cost nothing.
-      otel <- Resource.eval(OtelJava.global[IO])
-      meter <- Resource.eval(otel.meterProvider.get("auth-middleware"))
+      otel             <- Resource.eval(OtelJava.global[IO])
+      meter            <- Resource.eval(otel.meterProvider.get("auth-middleware"))
       given Tracer[IO] <- Resource.eval(
-        otel.tracerProvider.get("auth-middleware")
-      )
+                            otel.tracerProvider.get("auth-middleware")
+                          )
       otelEvents <- Resource.eval(AuthEvents.otel[IO](meter))
-      events = AuthEvents.combine(AuthEvents.slf4j[IO], otelEvents)
+      events      = AuthEvents.combine(AuthEvents.slf4j[IO], otelEvents)
       // Counters say what was decided; this says what it cost and which
       // dependency spent it.
       telemetry <- AuthTelemetry.otel[IO](meter)
@@ -60,4 +63,5 @@ object Main extends IOApp.Simple {
           IO(log.info("Server listening on {}", server.address)) *> IO.never
         }
     }
+
 }

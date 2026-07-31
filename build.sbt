@@ -1,7 +1,7 @@
 import Dependencies._
 
 scalaVersion := "3.8.4"
-version := "0.1.0-SNAPSHOT"
+version      := "0.1.0-SNAPSHOT"
 
 ThisBuild / scalacOptions := Seq(
   "-no-indent",
@@ -24,7 +24,7 @@ Global / onChangedBuildSource := ReloadOnSourceChanges
 lazy val root = (project in file("."))
   .settings(
     semanticdbEnabled := true,
-    name := "auth-middleware",
+    name              := "auth-middleware",
     // Use ++= so PlayJava plugin defaults (play/play-java/jackson) remain on the classpath.
     libraryDependencies ++= Seq(
       iron,
@@ -54,10 +54,10 @@ lazy val root = (project in file("."))
       Dependencies.hikaricp,
       Dependencies.flyway,
       Dependencies.flywayPostgres % Runtime,
-      Dependencies.postgres % Runtime,
-      Dependencies.logback % Runtime,
+      Dependencies.postgres       % Runtime,
+      Dependencies.logback        % Runtime,
       otelJava,
-      "io.opentelemetry" % "opentelemetry-exporter-otlp" % "1.63.0" % Runtime,
+      "io.opentelemetry" % "opentelemetry-exporter-otlp"               % "1.63.0" % Runtime,
       "io.opentelemetry" % "opentelemetry-sdk-extension-autoconfigure" % "1.64.0" % Runtime,
       Dependencies.sageClientCe,
       Dependencies.sageClientZio,

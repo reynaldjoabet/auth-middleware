@@ -5,35 +5,41 @@ import java.util.concurrent.CompletionStage
 
 import scala.jdk.CollectionConverters.*
 
-import auth.annotation.{RequireAnyScope, RequireScope}
 import auth.{FeatureChecker, Principal, SecurityAttrs}
+import auth.annotation.{RequireAnyScope, RequireScope}
 import com.nimbusds.jwt.JWTClaimsSet
 import munit.FunSuite
 import play.mvc.{Action, Http, Result, Results}
 
-/** Exercises [[ScopeCheckAction]] (ALL semantics) and [[AnyScopeCheckAction]]
-  * (ANY semantics) against hand-built requests, asserting the RFC 6750/9470
-  * challenge shapes the middleware promises.
+/**
+  * Exercises [[ScopeCheckAction]] (ALL semantics) and [[AnyScopeCheckAction]] (ANY semantics)
+  * against hand-built requests, asserting the RFC 6750/9470 challenge shapes the middleware
+  * promises.
   */
 class ScopeActionsSpec extends FunSuite {
 
   // ── carriers: the annotation instances under test ──────────────────────
   @RequireScope(Array("billing.invoices.read"))
   private class SingleCarrier
+
   @RequireScope(Array("billing.invoices.read", "audit.events.read"))
   private class AllCarrier
+
   @RequireScope(
     value = Array("reports.exports.read"),
     requireUserIdentity = false
   )
   private class MachineCarrier
+
   @RequireScope(
     value = Array("billing.invoices.read"),
     requiredFeature = "invoicing"
   )
   private class GatedCarrier
+
   @RequireAnyScope(Array("billing.invoices.read", "billing.invoices.manage"))
   private class AnyCarrier
+
   @RequireAnyScope(Array())
   private class EmptyAnyCarrier
 
@@ -229,4 +235,5 @@ class ScopeActionsSpec extends FunSuite {
     )
     assertEquals(r.status(), 403)
   }
+
 }

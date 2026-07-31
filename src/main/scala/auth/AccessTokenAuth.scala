@@ -1,11 +1,10 @@
 package auth
 
-import cats.Monad
 import cats.data.{EitherT, Kleisli, OptionT}
 import cats.effect.Clock
 import cats.syntax.all.*
-import org.http4s.headers.{Authorization, `Content-Type`}
-import org.http4s.server.AuthMiddleware
+import cats.Monad
+
 import org.http4s.{
   AuthScheme,
   AuthedRoutes,
@@ -16,60 +15,62 @@ import org.http4s.{
   Response,
   Status
 }
+import org.http4s.headers.{`Content-Type`, Authorization}
+import org.http4s.server.AuthMiddleware
 import org.typelevel.ci.*
 import auth.accesstoken.AccessTokenValidator
 import auth.dpop.DpopVerifier
-import auth.mtls.{ClientCertificates, Mtls}
 import auth.given
+import auth.mtls.{ClientCertificates, Mtls}
 
-/** http4s middleware enforcing OAuth 2.0 access-token authentication for
-  * financial-grade / government APIs.
+/**
+  * http4s middleware enforcing OAuth 2.0 access-token authentication for financial-grade /
+  * government APIs.
   *
   * Specs enforced:
-  *   - RFC 6750 — `Bearer` scheme, `WWW-Authenticate` challenges and error
-  *     codes
+  *   - RFC 6750 — `Bearer` scheme, `WWW-Authenticate` challenges and error codes
   *   - RFC 9068 — JWT access-token validation (via [[AccessTokenValidator]])
-  *   - RFC 9449 — DPoP sender-constrained tokens: `Authorization: DPoP …` plus
-  *     a `DPoP` proof header, bound through the token's `cnf.jkt` claim
+  *   - RFC 9449 — DPoP sender-constrained tokens: `Authorization: DPoP …` plus a `DPoP` proof
+  *     header, bound through the token's `cnf.jkt` claim
   *   - RFC 8705 — mutual-TLS certificate-bound tokens via `cnf.x5t#S256`
   *   - RFC 9470 — step-up authentication ([[requireAcr]])
-  *   - OAuth 2.1 hygiene — access tokens in the query string are rejected
-  *     outright, only one credential may be presented, and every authentication
-  *     response carries `Cache-Control: no-store`
+  *   - OAuth 2.1 hygiene — access tokens in the query string are rejected outright, only one
+  *     credential may be presented, and every authentication response carries
+  *     `Cache-Control: no-store`
   *
   * Behaviour:
-  *   - no credentials → `401` with `Bearer` (and, if enabled, `DPoP`)
-  *     challenges
-  *   - token in the query string or multiple credentials →
-  *     `400 invalid_request`
+  *   - no credentials → `401` with `Bearer` (and, if enabled, `DPoP`) challenges
+  *   - token in the query string or multiple credentials → `400 invalid_request`
   *   - failed validation or binding → `401 invalid_token`
   *   - missing/invalid/replayed DPoP proof → `401 invalid_dpop_proof`
-  *   - nonce enforcement on (RFC 9449 §8): a proof without a fresh
-  *     server-provided nonce → `401 use_dpop_nonce` + `DPoP-Nonce`; every
-  *     response to a DPoP request carries a fresh `DPoP-Nonce` for rotation
+  *   - nonce enforcement on (RFC 9449 §8): a proof without a fresh server-provided nonce →
+  *     `401 use_dpop_nonce` + `DPoP-Nonce`; every response to a DPoP request carries a fresh
+  *     `DPoP-Nonce` for rotation
   *   - valid token but missing scopes → `403 insufficient_scope`
   *   - valid token but insufficient `acr` / stale `auth_time` →
   *     `401 insufficient_user_authentication`
   *   - keys unavailable → `503` with `Retry-After` (fail closed)
   *
-  * Error bodies and challenge parameters only ever contain fixed,
-  * library-controlled strings — no token contents, claim values or upstream
-  * error messages. The one dynamic value is the `DPoP-Nonce` header: a
-  * server-minted random nonce (RFC 9449 §8), never derived from token material.
+  * Error bodies and challenge parameters only ever contain fixed, library-controlled strings — no
+  * token contents, claim values or upstream error messages. The one dynamic value is the
+  * `DPoP-Nonce` header: a server-minted random nonce (RFC 9449 §8), never derived from token
+  * material.
   */
 object AccessTokenAuth {
 
   private val DpopScheme: AuthScheme = ci"DPoP"
 
   private enum TokenScheme derives CanEqual {
+
     case Bearer
     case Dpop
+
   }
 
-  /** @param senderConstraint
-    *   whether plain bearer tokens are still accepted; see
-    *   [[SenderConstraintPolicy]]. `cnf` bindings present on a token are always
-    *   enforced regardless of this setting.
+  /**
+    * @param senderConstraint
+    *   whether plain bearer tokens are still accepted; see [[SenderConstraintPolicy]]. `cnf`
+    *   bindings present on a token are always enforced regardless of this setting.
     * @param dpopVerifier
     *   enables the `DPoP` scheme and proof validation when set
     * @param clientCertificates
@@ -79,8 +80,7 @@ object AccessTokenAuth {
       validator: AccessTokenValidator[F],
       events: AuthEvents[F],
       realm: String = "api",
-      senderConstraint: SenderConstraintPolicy =
-        SenderConstraintPolicy.EnforceWhenBound,
+      senderConstraint: SenderConstraintPolicy = SenderConstraintPolicy.EnforceWhenBound,
       dpopVerifier: Option[DpopVerifier[F]] = None,
       clientCertificates: Option[ClientCertificates[F]] = None
   ): AuthMiddleware[F, AuthContext] = {
@@ -203,16 +203,14 @@ object AccessTokenAuth {
           case Right((scheme, token)) =>
             (for {
               ctx <- EitherT(validator.validate(token))
-              _ <- EitherT(senderConstraintCheck(req, scheme, token, ctx))
-              _ <- EitherT(policyCheck(ctx))
+              _   <- EitherT(senderConstraintCheck(req, scheme, token, ctx))
+              _   <- EitherT(policyCheck(ctx))
             } yield ctx).value
         }
       }
 
     val onFailure: AuthedRoutes[AuthError, F] =
-      Kleisli(req =>
-        OptionT.pure[F](errorResponse(req.context, realm, dpopAlgs))
-      )
+      Kleisli(req => OptionT.pure[F](errorResponse(req.context, realm, dpopAlgs)))
 
     val base = AuthMiddleware(authenticate, onFailure)
 
@@ -250,8 +248,9 @@ object AccessTokenAuth {
       case _                                           => false
     }
 
-  /** Require every scope in `required` on top of authentication. Compose per
-    * route group, e.g. `requireScopes(Set("payments:write"))(paymentRoutes)`.
+  /**
+    * Require every scope in `required` on top of authentication. Compose per route group, e.g.
+    * `requireScopes(Set("payments:write"))(paymentRoutes)`.
     */
   def requireScopes[F[_]: Monad](
       required: Set[ScopeToken],
@@ -271,15 +270,16 @@ object AccessTokenAuth {
         )
     }
 
-  /** Require that an end user is present on the token — i.e. reject
-    * machine-to-machine (`client_credentials`) tokens on this route. Apply to
-    * endpoints that act on behalf of a person; leave it off for service/batch
-    * endpoints, which are gated on `client_id` + scopes instead.
+  /**
+    * Require that an end user is present on the token — i.e. reject machine-to-machine
+    * (`client_credentials`) tokens on this route. Apply to endpoints that act on behalf of a
+    * person; leave it off for service/batch endpoints, which are gated on `client_id` + scopes
+    * instead.
     *
-    * Failure is reported as `401 insufficient_user_authentication` (RFC 9470):
-    * the token is valid, but the route requires a user and the token has none.
-    * `isUserPresent` defaults to [[AuthContext.userPresent]]; override it with
-    * an authorization-server-specific signal if needed.
+    * Failure is reported as `401 insufficient_user_authentication` (RFC 9470): the token is valid,
+    * but the route requires a user and the token has none. `isUserPresent` defaults to
+    * [[AuthContext.userPresent]]; override it with an authorization-server-specific signal if
+    * needed.
     */
   def requireUser[F[_]: Monad](
       isUserPresent: AuthContext => Boolean = AuthContext.userPresent,
@@ -297,13 +297,12 @@ object AccessTokenAuth {
         )
     }
 
-  /** Step-up authentication (RFC 9470): require that the user authenticated
-    * with one of the given `acr` values. Takes at least one value (head +
-    * tail), so it can never be a silent no-op — there is no empty-set form that
-    * admits everyone. On failure the client receives
-    * `401 insufficient_user_authentication` with `acr_values`. For "any acr but
-    * recently authenticated" use [[requireFreshAuth]]; compose the two for
-    * "this acr AND recent".
+  /**
+    * Step-up authentication (RFC 9470): require that the user authenticated with one of the given
+    * `acr` values. Takes at least one value (head + tail), so it can never be a silent no-op —
+    * there is no empty-set form that admits everyone. On failure the client receives
+    * `401 insufficient_user_authentication` with `acr_values`. For "any acr but recently
+    * authenticated" use [[requireFreshAuth]]; compose the two for "this acr AND recent".
     *
     * An M2M token has no `acr` (RFC 9068 §2.2.1), so this also implies a user.
     */
@@ -332,12 +331,12 @@ object AccessTokenAuth {
     }
   }
 
-  /** Step-up freshness (RFC 9470): require that the user authenticated within
-    * `maxAge` (via the `auth_time` claim), regardless of `acr`. Since
-    * `auth_time` is a user-authentication claim, this also implies a user is
-    * present. Compose with [[requireAcr]] for "this acr, authenticated within
-    * `maxAge`". On failure the client receives
-    * `401 insufficient_user_authentication` with `max_age`.
+  /**
+    * Step-up freshness (RFC 9470): require that the user authenticated within `maxAge` (via the
+    * `auth_time` claim), regardless of `acr`. Since `auth_time` is a user-authentication claim,
+    * this also implies a user is present. Compose with [[requireAcr]] for "this acr, authenticated
+    * within `maxAge`". On failure the client receives `401 insufficient_user_authentication` with
+    * `max_age`.
     */
   def requireFreshAuth[F[_]: Monad: Clock](
       maxAge: MaxAuthAge,
@@ -363,16 +362,16 @@ object AccessTokenAuth {
         }
     }
 
-  /** Adds an ACR step-up authorization check requiring `mfaAcr` (multi-factor
-    * auth; defaults to `acr3`). Enforces authentication recency (default 5
-    * minutes) per NIST SP 800-63B. Returns a `WWW-Authenticate` challenge (`401
-    * insufficient_user_authentication`) when step-up is required.
+  /**
+    * Adds an ACR step-up authorization check requiring `mfaAcr` (multi-factor auth; defaults to
+    * `acr3`). Enforces authentication recency (default 5 minutes) per NIST SP 800-63B. Returns a
+    * `WWW-Authenticate` challenge (`401 insufficient_user_authentication`) when step-up is
+    * required.
     *
-    * A convenience preset composing [[requireAcr]] over [[requireFreshAuth]].
-    * Because the two gates short-circuit independently, a token failing both
-    * receives the `acr_values` challenge first and the `max_age` challenge on
-    * retry; if you need both in a single challenge, aggregate the requirements
-    * instead.
+    * A convenience preset composing [[requireAcr]] over [[requireFreshAuth]]. Because the two gates
+    * short-circuit independently, a token failing both receives the `acr_values` challenge first
+    * and the `max_age` challenge on retry; if you need both in a single challenge, aggregate the
+    * requirements instead.
     */
   def requireMfa[F[_]: Monad: Clock](
       mfaAcr: Acr = Acr("acr3"),
@@ -395,8 +394,7 @@ object AccessTokenAuth {
       req.headers.get[Authorization] match {
         case Some(Authorization(Credentials.Token(AuthScheme.Bearer, token))) =>
           Right((TokenScheme.Bearer, token))
-        case Some(Authorization(Credentials.Token(DpopScheme, token)))
-            if dpopEnabled =>
+        case Some(Authorization(Credentials.Token(DpopScheme, token))) if dpopEnabled =>
           Right((TokenScheme.Dpop, token))
         case Some(_) =>
           Left(AuthError.InvalidToken.WrongScheme)
@@ -409,7 +407,7 @@ object AccessTokenAuth {
       realm: String,
       dpopAlgs: Option[String]
   ): Response[F] = {
-    def bearer(params: String): String = s"""Bearer realm="$realm"$params"""
+    def bearer(params: String): String               = s"""Bearer realm="$realm"$params"""
     def withDpopChallenge(challenge: String): String =
       (challenge :: dpopAlgs.map(a => s"""DPoP algs="$a"""").toList)
         .mkString(", ")
@@ -498,4 +496,5 @@ object AccessTokenAuth {
         .withContentType(`Content-Type`(MediaType.application.json))
     }
   }
+
 }

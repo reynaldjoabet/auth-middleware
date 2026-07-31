@@ -2,11 +2,11 @@ package auth
 
 import munit.FunSuite
 
-/** The Iron refined types in `package.scala` are the input-validation boundary:
-  * every untrusted string (issuer, thumbprints, JWT structure, nonces, scopes)
-  * is admitted only if it matches. Their constraints encode security rules —
-  * e.g. an issuer must be https and carry no query/fragment, a thumbprint must
-  * be exactly a base64url SHA-256 — so they are tested directly.
+/**
+  * The Iron refined types in `package.scala` are the input-validation boundary: every untrusted
+  * string (issuer, thumbprints, JWT structure, nonces, scopes) is admitted only if it matches.
+  * Their constraints encode security rules — e.g. an issuer must be https and carry no
+  * query/fragment, a thumbprint must be exactly a base64url SHA-256 — so they are tested directly.
   */
 class RefinedTypesSpec extends FunSuite {
 
@@ -30,10 +30,10 @@ class RefinedTypesSpec extends FunSuite {
       "https://auth.example.com/realms/fintech"
     )
     rejects(Issuer.option, "Issuer")(
-      "http://auth.example.com", // not https
+      "http://auth.example.com",      // not https
       "https://auth.example.com?x=1", // query forbidden
-      "https://auth.example.com#f", // fragment forbidden
-      "https://has space.com", // whitespace
+      "https://auth.example.com#f",   // fragment forbidden
+      "https://has space.com",        // whitespace
       "ftp://auth.example.com",
       ""
     )
@@ -51,8 +51,8 @@ class RefinedTypesSpec extends FunSuite {
   test("JwkThumbprint: exactly 43 base64url chars, no padding") {
     accepts(JwkThumbprint.option, "JwkThumbprint")(b64, "-_" + ("a" * 41))
     rejects(JwkThumbprint.option, "JwkThumbprint")(
-      "A" * 42, // too short
-      "A" * 44, // too long
+      "A" * 42,         // too short
+      "A" * 44,         // too long
       ("A" * 42) + "=", // padding char, not base64url
       ("A" * 42) + "+", // '+' is base64, not base64url
       ("A" * 42) + "/",
@@ -72,10 +72,10 @@ class RefinedTypesSpec extends FunSuite {
   ) {
     accepts(SignedJwt.option, "SignedJwt")("aaa.bbb.ccc", "h-_.p-_.s-_")
     rejects(SignedJwt.option, "SignedJwt")(
-      "aaa.bbb", // unsecured / 2-segment
-      "aaa..ccc", // empty middle — the alg:none `header..` shape
-      "aaa.bbb.", // empty signature
-      ".bbb.ccc", // empty header
+      "aaa.bbb",         // unsecured / 2-segment
+      "aaa..ccc",        // empty middle — the alg:none `header..` shape
+      "aaa.bbb.",        // empty signature
+      ".bbb.ccc",        // empty header
       "aaa.bbb.ccc.ddd", // 5-part JWE, not a signed JWT here
       "not-a-jwt"
     )
@@ -108,4 +108,5 @@ class RefinedTypesSpec extends FunSuite {
     accepts(Subject.option, "Subject")("user-123", "a" * 255)
     rejects(Subject.option, "Subject")("", "  ", "a" * 256)
   }
+
 }

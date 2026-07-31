@@ -5,77 +5,79 @@ import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
 import java.util.Base64
 
-import javax.crypto.spec.{GCMParameterSpec, SecretKeySpec}
-import javax.crypto.{Cipher, KeyGenerator, SecretKey}
-
 import scala.concurrent.duration.*
 
-import cats.Applicative
 import cats.effect.Sync
 import cats.syntax.all.*
+import cats.Applicative
 
-/** Outcome of checking the `nonce` claim of a DPoP proof — mirrors Duende's
-  * `NonceValidationResult`. [[Missing]] and [[Invalid]] both end in a
-  * `use_dpop_nonce` challenge carrying a fresh `DPoP-Nonce`; they are separate
-  * so operators can tell a client that has not started the handshake from one
-  * presenting stale or forged values.
+import javax.crypto.{Cipher, KeyGenerator, SecretKey}
+import javax.crypto.spec.{GCMParameterSpec, SecretKeySpec}
+
+/**
+  * Outcome of checking the `nonce` claim of a DPoP proof — mirrors Duende's
+  * `NonceValidationResult`. [[Missing]] and [[Invalid]] both end in a `use_dpop_nonce` challenge
+  * carrying a fresh `DPoP-Nonce`; they are separate so operators can tell a client that has not
+  * started the handshake from one presenting stale or forged values.
   */
 enum NonceValidationResult derives CanEqual {
+
   case Valid
   case Missing // proof carries no nonce claim
   case Invalid // unknown, expired, already used, or minted under a foreign key
+
 }
 
-/** Issues and validates resource-server-provided DPoP nonces (RFC 9449 §8-9) —
-  * the counterpart of Duende's `IDPoPNonceValidator` (`CreateNonce` /
-  * `ValidateNonce`).
+/**
+  * Issues and validates resource-server-provided DPoP nonces (RFC 9449 §8-9) — the counterpart of
+  * Duende's `IDPoPNonceValidator` (`CreateNonce` / `ValidateNonce`).
   *
-  * When a [[DpopVerifier]] is given one of these, it refuses a proof that does
-  * not carry a fresh, server-minted `nonce` claim: the client is told to retry
-  * with a `DPoP-Nonce` the RS just issued. This is the fix the FAPI 2.0 formal
-  * analysis mandates for the DPoP Proof Replay attack — without it a leaked (or
-  * blocked-and-substituted) resource request can be replayed, because per-node
-  * jti single-use detection never sees the honest request. See
-  * [[SenderConstraintPolicy]] for why mTLS binding is not vulnerable here.
+  * When a [[DpopVerifier]] is given one of these, it refuses a proof that does not carry a fresh,
+  * server-minted `nonce` claim: the client is told to retry with a `DPoP-Nonce` the RS just issued.
+  * This is the fix the FAPI 2.0 formal analysis mandates for the DPoP Proof Replay attack — without
+  * it a leaked (or blocked-and-substituted) resource request can be replayed, because per-node jti
+  * single-use detection never sees the honest request. See [[SenderConstraintPolicy]] for why mTLS
+  * binding is not vulnerable here.
   *
   * Two families of implementation with different strength/operability trades:
-  *   - [[DpopNonceValidator.stateless]] — encrypted-timestamp freshness proof,
-  *     multi-node with a shared key and no store (Duende's
-  *     `DefaultDPoPNonceValidator` design)
-  *   - [[DpopNonceValidator.fromStore]] over a [[DpopNonceStore]] — strictly
-  *     single-use nonces backed by real state (in-memory per node, or Redis for
-  *     cross-node single-use)
+  *   - [[DpopNonceValidator.stateless]] — encrypted-timestamp freshness proof, multi-node with a
+  *     shared key and no store (Duende's `DefaultDPoPNonceValidator` design)
+  *   - [[DpopNonceValidator.fromStore]] over a [[DpopNonceStore]] — strictly single-use nonces
+  *     backed by real state (in-memory per node, or Redis for cross-node single-use)
   */
 trait DpopNonceValidator[F[_]] {
 
-  /** Mint a fresh nonce to hand to the client in a `DPoP-Nonce` header.
-    * (Duende: `CreateNonce`.)
+  /**
+    * Mint a fresh nonce to hand to the client in a `DPoP-Nonce` header. (Duende: `CreateNonce`.)
     */
   def createNonce: F[DpopNonce]
 
-  /** Check the `nonce` claim a proof presented, if any. (Duende:
-    * `ValidateNonce`.)
+  /**
+    * Check the `nonce` claim a proof presented, if any. (Duende: `ValidateNonce`.)
     */
   def validateNonce(presented: Option[String]): F[NonceValidationResult]
+
 }
 
 object DpopNonceValidator {
 
-  private val StatelessCipher = "AES/GCM/NoPadding"
+  private val StatelessCipher  = "AES/GCM/NoPadding"
   private val StatelessTagBits = 128
   private val StatelessIvBytes = 12
 
-  /** GCM additional authenticated data binding every nonce ciphertext to this
-    * purpose — the analogue of Duende's DataProtector purpose string
-    * (`"DPoPProofValidator-nonce"`). Even if the AES key is ever shared with
-    * another use, ciphertext minted elsewhere can never verify as a nonce.
+  /**
+    * GCM additional authenticated data binding every nonce ciphertext to this purpose — the
+    * analogue of Duende's DataProtector purpose string (`"DPoPProofValidator-nonce"`). Even if the
+    * AES key is ever shared with another use, ciphertext minted elsewhere can never verify as a
+    * nonce.
     */
   private val StatelessPurpose =
     "auth.dpop.nonce".getBytes(StandardCharsets.US_ASCII)
 
-  /** Adapt a [[DpopNonceStore]] (in-memory, Redis, …) into a validator with
-    * strictly single-use semantics: [[NonceValidationResult.Valid]] consumes
-    * the nonce, so a second presentation is [[NonceValidationResult.Invalid]].
+  /**
+    * Adapt a [[DpopNonceStore]] (in-memory, Redis, …) into a validator with strictly single-use
+    * semantics: [[NonceValidationResult.Valid]] consumes the nonce, so a second presentation is
+    * [[NonceValidationResult.Invalid]].
     */
   def fromStore[F[_]: Applicative](
       store: DpopNonceStore[F]
@@ -94,8 +96,9 @@ object DpopNonceValidator {
         }
     }
 
-  /** Single-node, single-use validator over [[DpopNonceStore.inMemory]] — see
-    * that adapter for the semantics and sizing guidance.
+  /**
+    * Single-node, single-use validator over [[DpopNonceStore.inMemory]] — see that adapter for the
+    * semantics and sizing guidance.
     */
   def inMemory[F[_]: Sync](
       ttl: FiniteDuration = 5.minutes,
@@ -103,42 +106,38 @@ object DpopNonceValidator {
   ): F[DpopNonceValidator[F]] =
     DpopNonceStore.inMemory[F](ttl, maxEntries).map(fromStore[F])
 
-  /** Stateless, multi-node validator — the pattern of Duende IdentityServer's
-    * `DefaultDPoPNonceValidator`: the nonce *is* an AES-GCM-encrypted server
-    * timestamp, so validation is decrypt + freshness check. No nonce store, no
-    * Redis: any node holding the same key can validate a nonce any other node
-    * issued, and restarts lose nothing.
+  /**
+    * Stateless, multi-node validator — the pattern of Duende IdentityServer's
+    * `DefaultDPoPNonceValidator`: the nonce *is* an AES-GCM-encrypted server timestamp, so
+    * validation is decrypt + freshness check. No nonce store, no Redis: any node holding the same
+    * key can validate a nonce any other node issued, and restarts lose nothing.
     *
-    * Trade-off vs a [[fromStore]] validator (single-use): a stateless nonce is
-    * a freshness proof, not a one-time value — it stays acceptable until
-    * `lifetime` elapses. Replay of a whole *proof* is still caught by the
-    * verifier's jti single-use checker (per node), so what the nonce bounds is
-    * the cross-node replay window: an attacker who captured a proof and plays
-    * it against a *different* node has at most `lifetime` to do so. Duende
-    * accepts exactly this trade (nonce validity = proof lifetime + skew); keep
-    * `lifetime` as tight as your clients' round trips allow.
-    * [[AccessTokenAuth]] rotates `DPoP-Nonce` on every response, so an active
-    * client always holds a fresh value and only pays a `use_dpop_nonce` round
-    * trip after idling past `lifetime`.
+    * Trade-off vs a [[fromStore]] validator (single-use): a stateless nonce is a freshness proof,
+    * not a one-time value — it stays acceptable until `lifetime` elapses. Replay of a whole *proof*
+    * is still caught by the verifier's jti single-use checker (per node), so what the nonce bounds
+    * is the cross-node replay window: an attacker who captured a proof and plays it against a
+    * *different* node has at most `lifetime` to do so. Duende accepts exactly this trade (nonce
+    * validity = proof lifetime + skew); keep `lifetime` as tight as your clients' round trips
+    * allow. [[AccessTokenAuth]] rotates `DPoP-Nonce` on every response, so an active client always
+    * holds a fresh value and only pays a `use_dpop_nonce` round trip after idling past `lifetime`.
     *
-    * Key rotation is first-class, mirroring ASP.NET DataProtection's key ring
-    * (which Duende gets for free): mint with `key`, accept with `key` or any of
-    * `previousKeys`. Roll a key by moving it to `previousKeys` and deploying a
-    * fresh `key`; in-flight nonces stay valid, and the old key can be dropped
-    * one nonce-`lifetime` later.
+    * Key rotation is first-class, mirroring ASP.NET DataProtection's key ring (which Duende gets
+    * for free): mint with `key`, accept with `key` or any of `previousKeys`. Roll a key by moving
+    * it to `previousKeys` and deploying a fresh `key`; in-flight nonces stay valid, and the old key
+    * can be dropped one nonce-`lifetime` later.
     *
     * @param key
-    *   AES key (128/192/256-bit) shared by every node — distribute via your
-    *   secret manager, rotate like any other service credential. Use
-    *   [[randomKey]] only for single-node or test deployments.
+    *   AES key (128/192/256-bit) shared by every node — distribute via your secret manager, rotate
+    *   like any other service credential. Use [[randomKey]] only for single-node or test
+    *   deployments.
     * @param previousKeys
     *   retired minting keys still accepted for validation during rotation
     * @param lifetime
     *   how long an issued nonce stays acceptable
     * @param forwardSkew
-    *   tolerated clock drift for a nonce that appears to come from the future —
-    *   the issuing clock is another *server* node, so keep this small (Duende's
-    *   `ProofTokenNonceClockSkew` is 5 seconds, vs 25 for client-minted `iat`)
+    *   tolerated clock drift for a nonce that appears to come from the future — the issuing clock
+    *   is another *server* node, so keep this small (Duende's `ProofTokenNonceClockSkew` is 5
+    *   seconds, vs 25 for client-minted `iat`)
     */
   def stateless[F[_]: Sync](
       key: SecretKey,
@@ -147,7 +146,7 @@ object DpopNonceValidator {
       forwardSkew: FiniteDuration = 5.seconds
   ): F[DpopNonceValidator[F]] =
     Sync[F].delay {
-      val random = new SecureRandom()
+      val random       = new SecureRandom()
       val acceptedKeys = key :: previousKeys
 
       new DpopNonceValidator[F] {
@@ -202,7 +201,7 @@ object DpopNonceValidator {
                           case None    => NonceValidationResult.Invalid
                           case Some(t) =>
                             val nowSeconds = now.toSeconds
-                            val fresh =
+                            val fresh      =
                               nowSeconds - t <= lifetime.toSeconds &&
                                 t - nowSeconds <= forwardSkew.toSeconds
                             if (fresh) NonceValidationResult.Valid
@@ -230,9 +229,10 @@ object DpopNonceValidator {
       new String(plaintext, StandardCharsets.US_ASCII).toLongOption
     } catch { case _: Exception => None }
 
-  /** A fresh 256-bit AES key for [[stateless]]. Single-node/test convenience:
-    * nonces die with the process and no other node can validate them — in
-    * production load a shared key ([[keyFromBytes]]) from your secret manager.
+  /**
+    * A fresh 256-bit AES key for [[stateless]]. Single-node/test convenience: nonces die with the
+    * process and no other node can validate them — in production load a shared key
+    * ([[keyFromBytes]]) from your secret manager.
     */
   def randomKey[F[_]: Sync]: F[SecretKey] =
     Sync[F].delay {
@@ -241,7 +241,9 @@ object DpopNonceValidator {
       generator.generateKey()
     }
 
-  /** Wrap key material from a secret manager (16, 24 or 32 bytes). */
+  /**
+    * Wrap key material from a secret manager (16, 24 or 32 bytes).
+    */
   def keyFromBytes(bytes: Array[Byte]): SecretKey = {
     require(
       Set(16, 24, 32).contains(bytes.length),
@@ -249,4 +251,5 @@ object DpopNonceValidator {
     )
     new SecretKeySpec(bytes, "AES")
   }
+
 }

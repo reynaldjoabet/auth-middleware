@@ -1,21 +1,23 @@
 package auth
 package accesstoken
 
-import auth.revocation.TokenDenylist
+import scala.concurrent.duration.*
 
 import cats.effect.IO
-import com.nimbusds.jose.JOSEObjectType
-import com.nimbusds.jose.KeySourceException
+
+import auth.revocation.TokenDenylist
+import com.nimbusds.jose.jwk.source.JWKSource
 import com.nimbusds.jose.jwk.JWK
 import com.nimbusds.jose.jwk.JWKSelector
-import com.nimbusds.jose.jwk.source.JWKSource
 import com.nimbusds.jose.proc.SecurityContext
+import com.nimbusds.jose.JOSEObjectType
+import com.nimbusds.jose.KeySourceException
 import com.nimbusds.jwt.JWTClaimsSet
 import io.github.iltotore.iron.*
 import munit.CatsEffectSuite
-import scala.concurrent.duration.*
 
 class AccessTokenValidatorSpec extends CatsEffectSuite {
+
   import TestTokens.*
 
   private def validator(
@@ -39,11 +41,15 @@ class AccessTokenValidatorSpec extends CatsEffectSuite {
   // omission tests can assert the specific Nimbus message (which the validator
   // routes to authFailed's internalDetail, not into the client-facing AuthError).
   private final class CapturingEvents extends AuthEvents[IO] {
-    private val buf = scala.collection.mutable.ListBuffer.empty[String]
+
+    private val buf                               = scala.collection.mutable.ListBuffer.empty[String]
     def authSucceeded(ctx: AuthContext): IO[Unit] = IO.unit
+
     def authFailed(error: AuthError, internalDetail: String): IO[Unit] =
       IO(buf += internalDetail)
+
     def details: List[String] = buf.toList
+
   }
 
   // Each default required claim missing, then 2, 3, 4, and all of them. Every
@@ -59,7 +65,7 @@ class AccessTokenValidatorSpec extends CatsEffectSuite {
   )).foreach { drop =>
     test(s"rejects a token missing required claim(s): ${drop.mkString(", ")}") {
       val events = new CapturingEvents
-      val v = AccessTokenValidator
+      val v      = AccessTokenValidator
         .withKeySource[IO](config, keySource, events, TokenDenylist.none[IO])
       v.validate(sign(claimsWithout(drop*))).map { result =>
         assertEquals(result, Left(AuthError.InvalidToken.Rejected))
@@ -130,22 +136,18 @@ class AccessTokenValidatorSpec extends CatsEffectSuite {
     jwt.sign(new com.nimbusds.jose.crypto.RSASSASigner(signingKey))
     validator()
       .validate(jwt.serialize())
-      .map(result =>
-        assertEquals(result, Left(AuthError.InvalidToken.Rejected))
-      )
+      .map(result => assertEquals(result, Left(AuthError.InvalidToken.Rejected)))
   }
 
   test("rejects a token from the wrong issuer") {
-    validator().validate(sign(claims(iss = "https://evil.example"))).map {
-      result =>
-        assertEquals(result, Left(AuthError.InvalidToken.Rejected))
+    validator().validate(sign(claims(iss = "https://evil.example"))).map { result =>
+      assertEquals(result, Left(AuthError.InvalidToken.Rejected))
     }
   }
 
   test("rejects a token for a different audience") {
-    validator().validate(sign(claims(aud = "https://other-api.example"))).map {
-      result =>
-        assertEquals(result, Left(AuthError.InvalidToken.Rejected))
+    validator().validate(sign(claims(aud = "https://other-api.example"))).map { result =>
+      assertEquals(result, Left(AuthError.InvalidToken.Rejected))
     }
   }
 
@@ -184,9 +186,8 @@ class AccessTokenValidatorSpec extends CatsEffectSuite {
   test("rejects a token whose typ is not accepted when restricted to at+jwt") {
     val strict =
       config.copy(acceptedTokenTypes = Set(new JOSEObjectType("at+jwt")))
-    validator(strict).validate(sign(claims(), typ = JOSEObjectType.JWT)).map {
-      result =>
-        assertEquals(result, Left(AuthError.InvalidToken.Rejected))
+    validator(strict).validate(sign(claims(), typ = JOSEObjectType.JWT)).map { result =>
+      assertEquals(result, Left(AuthError.InvalidToken.Rejected))
     }
   }
 
@@ -221,7 +222,7 @@ class AccessTokenValidatorSpec extends CatsEffectSuite {
   test(
     "a token with no jti skips the denylist when jti is relaxed out of requiredClaims"
   ) {
-    val cfg = config.copy(requiredClaims = Set("sub", "exp", "iat"))
+    val cfg     = config.copy(requiredClaims = Set("sub", "exp", "iat"))
     val denyAll = new TokenDenylist[IO] {
       def isRevoked(tokenId: String): IO[Boolean] = IO.pure(true)
     }
@@ -265,9 +266,7 @@ class AccessTokenValidatorSpec extends CatsEffectSuite {
 
   test("AccessTokenConfig rejects a non-https jwksUri") {
     intercept[IllegalArgumentException] {
-      config.copy(jwksUri =
-        java.net.URI.create("http://auth.test.example/jwks")
-      )
+      config.copy(jwksUri = java.net.URI.create("http://auth.test.example/jwks"))
     }
   }
 
@@ -293,10 +292,8 @@ class AccessTokenValidatorSpec extends CatsEffectSuite {
   }
 
   test("clientId falls back to azp when client_id is not in requiredClaims") {
-    val cfg = config.copy(requiredClaims =
-      Set("sub", "exp", "iat")
-    ) // relaxed: client_id optional
-    val c = new com.nimbusds.jwt.JWTClaimsSet.Builder(claims())
+    val cfg = config.copy(requiredClaims = Set("sub", "exp", "iat")) // relaxed: client_id optional
+    val c   = new com.nimbusds.jwt.JWTClaimsSet.Builder(claims())
       .claim("client_id", null)
       .claim("azp", "svc-account")
       .build()
@@ -335,9 +332,8 @@ class AccessTokenValidatorSpec extends CatsEffectSuite {
   }
 
   test("rejects a present-but-malformed cnf.jkt (fails closed, no downgrade)") {
-    validator().validate(sign(dpopBoundClaims(jkt = "too-short"))).map {
-      result =>
-        assertEquals(result, Left(AuthError.InvalidToken.Rejected))
+    validator().validate(sign(dpopBoundClaims(jkt = "too-short"))).map { result =>
+      assertEquals(result, Left(AuthError.InvalidToken.Rejected))
     }
   }
 
@@ -366,4 +362,5 @@ class AccessTokenValidatorSpec extends CatsEffectSuite {
       }
     }
   }
+
 }

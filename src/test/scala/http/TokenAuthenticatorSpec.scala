@@ -6,6 +6,7 @@ import java.util.function.Function as JFunction
 
 import scala.jdk.CollectionConverters.*
 
+import auth.{OAuthAttrs, OAuthConfig, Principal, SecurityAttrs}
 import auth.service.{
   DPoPNonceService,
   DPoPProofVerifier,
@@ -13,22 +14,20 @@ import auth.service.{
   TokenAuthenticator,
   TokenIntrospector
 }
-import auth.{OAuthAttrs, OAuthConfig, Principal, SecurityAttrs}
 import com.nimbusds.jwt.JWTClaimsSet
 import munit.FunSuite
 import play.mvc.{Http, Result, Results}
 
-/** Exercises the [[TokenAuthenticator]] pipeline shared by the composed
-  * annotations and [[http.filters.AccessTokenAuthFilter]]: the OAuth 2.1
-  * request-hygiene rejections, challenge shapes (RFC 6750 `WWW-Authenticate` +
-  * `Cache-Control: no-store`), and the idempotence contract that lets the
-  * app-wide filter compose with per-route annotations without spending a DPoP
-  * proof's jti twice.
+/**
+  * Exercises the [[TokenAuthenticator]] pipeline shared by the composed annotations and
+  * [[http.filters.AccessTokenAuthFilter]]: the OAuth 2.1 request-hygiene rejections, challenge
+  * shapes (RFC 6750 `WWW-Authenticate` + `Cache-Control: no-store`), and the idempotence contract
+  * that lets the app-wide filter compose with per-route annotations without spending a DPoP proof's
+  * jti twice.
   *
-  * Paths that need a validly signed token (cnf dispatch, proof verification,
-  * nonce enforcement) are covered by the Scala stack's equivalent specs
-  * ([[auth.AccessTokenAuthSpec]], [[auth.dpop.DpopVerifierSpec]]); this spec
-  * pins everything reachable without a JWKS.
+  * Paths that need a validly signed token (cnf dispatch, proof verification, nonce enforcement) are
+  * covered by the Scala stack's equivalent specs ([[auth.AccessTokenAuthSpec]],
+  * [[auth.dpop.DpopVerifierSpec]]); this spec pins everything reachable without a JWKS.
   */
 class TokenAuthenticatorSpec extends FunSuite {
 
@@ -212,4 +211,5 @@ class TokenAuthenticatorSpec extends FunSuite {
     val ok = run(preAuthenticated(dpopBound = true), requireDPoP = true)
     assertEquals(ok.status(), 200)
   }
+
 }

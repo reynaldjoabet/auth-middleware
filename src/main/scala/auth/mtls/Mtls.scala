@@ -4,18 +4,20 @@ package mtls
 import java.io.ByteArrayInputStream
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
 import java.security.cert.{CertificateFactory, X509Certificate}
+import java.security.MessageDigest
 
 import cats.effect.Sync
+
 import com.nimbusds.oauth2.sdk.auth.X509CertificateConfirmation
-import org.http4s.Request
 import org.http4s.server.ServerRequestKeys
+import org.http4s.Request
 import org.typelevel.ci.*
 
-/** Source of the TLS client certificate for mutual-TLS certificate-bound access
-  * tokens (RFC 8705 §3). The middleware compares the certificate's SHA-256
-  * thumbprint against the token's `cnf.x5t#S256` confirmation claim.
+/**
+  * Source of the TLS client certificate for mutual-TLS certificate-bound access tokens (RFC 8705
+  * §3). The middleware compares the certificate's SHA-256 thumbprint against the token's
+  * `cnf.x5t#S256` confirmation claim.
   */
 trait ClientCertificates[F[_]] {
   def extract(req: Request[F]): F[Option[X509Certificate]]
@@ -23,8 +25,9 @@ trait ClientCertificates[F[_]] {
 
 object ClientCertificates {
 
-  /** Read the client certificate from the TLS session — use this when this
-    * service terminates TLS itself (e.g. Ember/Blaze with `wantClientAuth`).
+  /**
+    * Read the client certificate from the TLS session — use this when this service terminates TLS
+    * itself (e.g. Ember/Blaze with `wantClientAuth`).
     */
   def fromTlsSession[F[_]: Sync]: ClientCertificates[F] =
     new ClientCertificates[F] {
@@ -37,15 +40,15 @@ object ClientCertificates {
         )
     }
 
-  /** Read a URL-encoded PEM client certificate from a header set by a
-    * TLS-terminating reverse proxy (e.g. nginx `$ssl_client_escaped_cert`).
+  /**
+    * Read a URL-encoded PEM client certificate from a header set by a TLS-terminating reverse proxy
+    * (e.g. nginx `$ssl_client_escaped_cert`).
     *
-    * SECURITY: only use this behind a proxy you control, and configure the
-    * proxy to *always* set or strip this header. If clients can reach this
-    * service directly, or the proxy forwards client-supplied values of the
-    * header, an attacker can satisfy certificate binding by sending the stolen
-    * token's certificate (public material) in the header. An unparseable value
-    * is treated as no certificate, which fails closed for bound tokens.
+    * SECURITY: only use this behind a proxy you control, and configure the proxy to *always* set or
+    * strip this header. If clients can reach this service directly, or the proxy forwards
+    * client-supplied values of the header, an attacker can satisfy certificate binding by sending
+    * the stolen token's certificate (public material) in the header. An unparseable value is
+    * treated as no certificate, which fails closed for bound tokens.
     */
   def fromForwardedHeader[F[_]: Sync](
       headerName: CIString = ci"X-Forwarded-Client-Cert"
@@ -59,19 +62,21 @@ object ClientCertificates {
           .flatMap(Mtls.parsePem)
       )
   }
+
 }
 
 object Mtls {
 
-  /** RFC 8705 thumbprint: base64url(SHA-256(DER-encoded certificate)), computed
-    * by the Nimbus SDK (`X509CertUtils.computeSHA256Thumbprint`).
+  /**
+    * RFC 8705 thumbprint: base64url(SHA-256(DER-encoded certificate)), computed by the Nimbus SDK
+    * (`X509CertUtils.computeSHA256Thumbprint`).
     */
   def thumbprint(cert: X509Certificate): String =
     X509CertificateConfirmation.of(cert).getValue.toString
 
-  /** Constant-time comparison of a presented certificate against
-    * `cnf.x5t#S256`. Fails closed (returns false) if the certificate cannot be
-    * thumbprinted.
+  /**
+    * Constant-time comparison of a presented certificate against `cnf.x5t#S256`. Fails closed
+    * (returns false) if the certificate cannot be thumbprinted.
     */
   def matches(
       cert: X509Certificate,
@@ -101,4 +106,5 @@ object Mtls {
     catch {
       case _: java.security.cert.CertificateException => None
     }
+
 }

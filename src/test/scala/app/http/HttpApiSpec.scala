@@ -1,26 +1,28 @@
 package app.http
 
-import auth.AuthContext
 import cats.data.{Kleisli, OptionT}
 import cats.effect.IO
+
+import auth.AuthContext
 import munit.CatsEffectSuite
 import org.http4s.*
 import org.http4s.implicits.*
 import org.http4s.server.AuthMiddleware
 import org.typelevel.otel4s.trace.Tracer
-
 import app.http.error.ProblemDetails
 
-/** The composed HTTP stack, as [[app.http.Server]] builds it. These assert
-  * *wiring*, not the individual middlewares: each piece has its own spec, and
-  * every one of them passed while the stack itself had no error net at all.
+/**
+  * The composed HTTP stack, as [[app.http.Server]] builds it. These assert *wiring*, not the
+  * individual middlewares: each piece has its own spec, and every one of them passed while the
+  * stack itself had no error net at all.
   */
 class HttpApiSpec extends CatsEffectSuite {
 
   private given Tracer[IO] = Tracer.noop[IO]
 
-  /** Rejects everything: the protected routes are exercised in
-    * [[auth.AccessTokenAuthSpec]], and the probes below are open.
+  /**
+    * Rejects everything: the protected routes are exercised in [[auth.AccessTokenAuthSpec]], and
+    * the probes below are open.
     */
   private val rejectAll: AuthMiddleware[IO, AuthContext] =
     _ => Kleisli(_ => OptionT.none[IO, Response[IO]])
@@ -70,7 +72,7 @@ class HttpApiSpec extends CatsEffectSuite {
 
   test("a request id that could forge a log record is replaced, not echoed") {
     val injected = "abc\r\n2026-07-28 ERROR forged line"
-    val request = Request[IO](Method.GET, uri"/health")
+    val request  = Request[IO](Method.GET, uri"/health")
       .putHeaders(Header.Raw(RequestId.HeaderName, injected))
     app().run(request).map { response =>
       val assigned = requestIdOf(response)
@@ -90,8 +92,8 @@ class HttpApiSpec extends CatsEffectSuite {
 
   test("probes stay open and report readiness") {
     for {
-      health <- app().run(Request[IO](Method.GET, uri"/health"))
-      ready <- app().run(Request[IO](Method.GET, uri"/ready"))
+      health   <- app().run(Request[IO](Method.GET, uri"/health"))
+      ready    <- app().run(Request[IO](Method.GET, uri"/ready"))
       notReady <- app(IO.pure(false)).run(Request[IO](Method.GET, uri"/ready"))
     } yield {
       assertEquals(health.status.code, 200)
@@ -99,4 +101,5 @@ class HttpApiSpec extends CatsEffectSuite {
       assertEquals(notReady.status.code, 503)
     }
   }
+
 }

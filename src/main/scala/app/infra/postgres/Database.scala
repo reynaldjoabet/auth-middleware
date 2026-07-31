@@ -1,11 +1,11 @@
 package app.infra.postgres
 
-import app.config.DbConfig
-
 import cats.effect.{Resource, Sync}
-import cats.syntax.flatMap.*
-import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 import cats.syntax.all.catsSyntaxApplicativeError
+import cats.syntax.flatMap.*
+
+import app.config.DbConfig
+import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 import org.flywaydb.core.Flyway
 import org.slf4j.LoggerFactory
 
@@ -33,22 +33,20 @@ object Database {
       }
     )
 
-  /** Applies pending Flyway migrations from `classpath:db/migration`, using the
-    * app's own pool so migration and runtime provably talk to the same
-    * database.
+  /**
+    * Applies pending Flyway migrations from `classpath:db/migration`, using the app's own pool so
+    * migration and runtime provably talk to the same database.
     *
-    * Runs before the server binds, and a failure aborts the boot: a node whose
-    * schema is not at the expected version must never start serving. Flyway
-    * takes a database-level lock for the duration, so rolling out N replicas at
-    * once is safe — the first to acquire it migrates, the rest wait and then
-    * find nothing pending.
+    * Runs before the server binds, and a failure aborts the boot: a node whose schema is not at the
+    * expected version must never start serving. Flyway takes a database-level lock for the
+    * duration, so rolling out N replicas at once is safe — the first to acquire it migrates, the
+    * rest wait and then find nothing pending.
     *
     * @param baselineOnMigrate
-    *   one-shot adoption switch for a database that already carries the schema
-    *   (someone applied the SQL by hand). It marks the current state as the
-    *   baseline instead of failing on "relation already exists" — which also
-    *   means it *skips* V1 rather than applying it, so leave it off in steady
-    *   state or a genuinely empty database silently comes up empty.
+    *   one-shot adoption switch for a database that already carries the schema (someone applied the
+    *   SQL by hand). It marks the current state as the baseline instead of failing on "relation
+    *   already exists" — which also means it *skips* V1 rather than applying it, so leave it off in
+    *   steady state or a genuinely empty database silently comes up empty.
     */
   def migrate[F[_]](
       ds: HikariDataSource,
@@ -84,11 +82,14 @@ object Database {
       )
     )
 
-  /** Readiness probe: borrow a connection and validate it, never throwing. */
+  /**
+    * Readiness probe: borrow a connection and validate it, never throwing.
+    */
   def ping[F[_]](ds: HikariDataSource)(using F: Sync[F]): F[Boolean] =
     F.blocking {
       val c = ds.getConnection
       try c.isValid(2)
       finally c.close()
     }.handleError(_ => false)
+
 }

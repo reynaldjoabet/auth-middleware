@@ -1,24 +1,23 @@
 package auth
 
-import auth.accesstoken.*
-import auth.dpop.DpopVerifier
-
 import java.net.URI
 import java.util.Date
 
 import scala.concurrent.duration.*
 
+import auth.accesstoken.*
+import auth.dpop.DpopVerifier
+import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jose.crypto.{ECDSASigner, MACSigner, RSASSASigner}
+import com.nimbusds.jose.jwk.{Curve, ECKey, JWKSet, RSAKey}
 import com.nimbusds.jose.jwk.gen.{ECKeyGenerator, RSAKeyGenerator}
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet
-import com.nimbusds.jose.jwk.{Curve, ECKey, JWKSet, RSAKey}
 import com.nimbusds.jose.proc.SecurityContext
-import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 
 object TestTokens {
 
-  val issuer = "https://auth.test.example"
+  val issuer   = "https://auth.test.example"
   val audience = "https://api.test.example"
 
   val config: AccessTokenConfig = AccessTokenConfig(
@@ -29,6 +28,7 @@ object TestTokens {
 
   val signingKey: RSAKey =
     new RSAKeyGenerator(2048).keyID("test-key-1").generate()
+
   val rogueKey: RSAKey =
     new RSAKeyGenerator(2048).keyID("test-key-1").generate()
 
@@ -44,7 +44,7 @@ object TestTokens {
       expiresIn: FiniteDuration = 5.minutes
   ): JWTClaimsSet = {
     val now = System.currentTimeMillis()
-    val b = new JWTClaimsSet.Builder()
+    val b   = new JWTClaimsSet.Builder()
       .issuer(iss)
       .audience(aud)
       .issueTime(new Date(now))
@@ -84,8 +84,10 @@ object TestTokens {
   // ---------------------------------------------------------------- DPoP
   val dpopKey: ECKey =
     new ECKeyGenerator(Curve.P_256).keyID("dpop-1").generate()
+
   val rogueDpopKey: ECKey =
     new ECKeyGenerator(Curve.P_256).keyID("dpop-1").generate()
+
   val dpopJkt: String = dpopKey.toPublicJWK.computeThumbprint().toString
 
   def dpopBoundClaims(
@@ -123,7 +125,7 @@ object TestTokens {
       .claim("ath", ath.getOrElse(DpopVerifier.accessTokenHash(accessToken)))
     nonce.foreach(b.claim("nonce", _))
     val claimsSet = b.build()
-    val jwt = new SignedJWT(
+    val jwt       = new SignedJWT(
       new JWSHeader.Builder(JWSAlgorithm.ES256)
         .`type`(typ)
         .jwk(key.toPublicJWK)
@@ -160,4 +162,5 @@ object TestTokens {
       |O82mHHDxgn4CASXUCHXPAGcVl3FgZbEk5DkCICIrUCb8CUlrSOS/S0XmTqCRV1Vn
       |eFhk5VeTR9anjEiX
       |-----END CERTIFICATE-----""".stripMargin
+
 }

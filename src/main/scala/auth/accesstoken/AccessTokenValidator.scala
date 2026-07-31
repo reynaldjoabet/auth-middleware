@@ -7,8 +7,7 @@ import scala.jdk.CollectionConverters.*
 
 import cats.effect.Sync
 import cats.syntax.all.*
-import com.nimbusds.jose.JOSEException
-import com.nimbusds.jose.KeySourceException
+
 import com.nimbusds.jose.jwk.source.{JWKSource, JWKSourceBuilder}
 import com.nimbusds.jose.proc.{
   BadJOSEException,
@@ -17,20 +16,23 @@ import com.nimbusds.jose.proc.{
   SecurityContext
 }
 import com.nimbusds.jose.util.DefaultResourceRetriever
-import com.nimbusds.jwt.proc.{DefaultJWTClaimsVerifier, DefaultJWTProcessor}
+import com.nimbusds.jose.JOSEException
+import com.nimbusds.jose.KeySourceException
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
+import com.nimbusds.jwt.proc.{DefaultJWTClaimsVerifier, DefaultJWTProcessor}
 import com.nimbusds.oauth2.sdk.auth.X509CertificateConfirmation
 import com.nimbusds.oauth2.sdk.dpop.JWKThumbprintConfirmation
-
 import auth.revocation.{TokenDenylist, TokenIntrospection}
 
-/** Validates OAuth 2.0 JWT access tokens (RFC 9068 profile). */
+/**
+  * Validates OAuth 2.0 JWT access tokens (RFC 9068 profile).
+  */
 trait AccessTokenValidator[F[_]] {
 
-  /** Fully validate a compact-serialized JWT: structure, JOSE `typ` header,
-    * signature against the issuer's JWKS, issuer, audience, lifetime, required
-    * claims, the revocation denylist and (when configured) RFC 7662
-    * introspection. Returns a redaction-safe [[AuthError]] on the left;
+  /**
+    * Fully validate a compact-serialized JWT: structure, JOSE `typ` header, signature against the
+    * issuer's JWKS, issuer, audience, lifetime, required claims, the revocation denylist and (when
+    * configured) RFC 7662 introspection. Returns a redaction-safe [[AuthError]] on the left;
     * internal diagnostics are reported via [[AuthEvents]].
     */
   def validate(token: String): F[Either[AuthError, AuthContext]]
@@ -38,34 +40,32 @@ trait AccessTokenValidator[F[_]] {
 
 object AccessTokenValidator {
 
-  /** Production wiring for access token validation: verification keys are
-    * fetched from `config.jwksUri` and cached, with rate limiting, retries and
-    * outage tolerance, so key rotation at the authorization server is picked up
-    * automatically and transient JWKS outages do not take the API down.
+  /**
+    * Production wiring for access token validation: verification keys are fetched from
+    * `config.jwksUri` and cached, with rate limiting, retries and outage tolerance, so key rotation
+    * at the authorization server is picked up automatically and transient JWKS outages do not take
+    * the API down.
     *
-    * This validator is specifically for OAuth 2.0 access tokens (RFC 9068): it
-    * enforces required claims (sub, exp, iat, client_id, jti), verifies issuer
-    * and audience, and supports optional revocation checks via denylist and RFC
-    * 7662 introspection.
+    * This validator is specifically for OAuth 2.0 access tokens (RFC 9068): it enforces required
+    * claims (sub, exp, iat, client_id, jti), verifies issuer and audience, and supports optional
+    * revocation checks via denylist and RFC 7662 introspection.
     *
     * @param config
     *   access token configuration (issuer, audience, JWKS URI, required claims)
     * @param events
     *   event sink for auth success/failure and diagnostics
     * @param denylist
-    *   distributed revocation store (e.g. Redis); prevents use of revoked
-    *   tokens
+    *   distributed revocation store (e.g. Redis); prevents use of revoked tokens
     * @param introspection
-    *   optional RFC 7662 revocation check against the authorization server —
-    *   the Redis-free alternative to a distributed [[TokenDenylist]] (the
-    *   Duende pattern). Runs after local validation and the denylist; an
-    *   inactive token is rejected `invalid_token`, an unreachable endpoint
-    *   fails closed as 503. Build a second validator without it for route
-    *   groups that should not pay the network hop.
+    *   optional RFC 7662 revocation check against the authorization server — the Redis-free
+    *   alternative to a distributed [[TokenDenylist]] (the Duende pattern). Runs after local
+    *   validation and the denylist; an inactive token is rejected `invalid_token`, an unreachable
+    *   endpoint fails closed as 503. Build a second validator without it for route groups that
+    *   should not pay the network hop.
     * @param telemetry
-    *   latency/health instrumentation for this validator and the dependencies
-    *   handed to it — including Nimbus's own JWKS cache lifecycle, which is
-    *   otherwise entirely opaque. Defaults to [[AuthTelemetry.noop]].
+    *   latency/health instrumentation for this validator and the dependencies handed to it —
+    *   including Nimbus's own JWKS cache lifecycle, which is otherwise entirely opaque. Defaults to
+    *   [[AuthTelemetry.noop]].
     */
   def default[F[_]: Sync](
       config: AccessTokenConfig,
@@ -104,12 +104,12 @@ object AccessTokenValidator {
         withKeySource(config, _, events, denylist, introspection, telemetry)
       )
 
-  /** Build an access token validator over an explicit key source — used in
-    * tests and for non-HTTP key distribution.
+  /**
+    * Build an access token validator over an explicit key source — used in tests and for non-HTTP
+    * key distribution.
     *
-    * Validates access tokens using the provided key source (instead of fetching
-    * from a remote JWKS URI). Useful for testing, key distribution via
-    * configuration, or air-gapped deployments.
+    * Validates access tokens using the provided key source (instead of fetching from a remote JWKS
+    * URI). Useful for testing, key distribution via configuration, or air-gapped deployments.
     *
     * @param config
     *   access token configuration
@@ -122,8 +122,8 @@ object AccessTokenValidator {
     * @param introspection
     *   optional RFC 7662 introspection
     * @param telemetry
-    *   instrumentation for the validator and its revocation dependencies; the
-    *   key source is caller-supplied here, so nothing instruments it
+    *   instrumentation for the validator and its revocation dependencies; the key source is
+    *   caller-supplied here, so nothing instruments it
     */
   def withKeySource[F[_]: Sync](
       config: AccessTokenConfig,
@@ -174,9 +174,9 @@ object AccessTokenValidator {
         Set(config.audience).asJava, // acceptedAudience
         new JWTClaimsSet.Builder()
           .issuer(config.issuer)
-          .build(), // exactMatchClaims
+          .build(),                   // exactMatchClaims
         config.requiredClaims.asJava, // requiredClaims
-        null // prohibitedClaims
+        null                          // prohibitedClaims
       )
       claimsVerifier.setMaxClockSkew(config.clockSkew.toSeconds.toInt)
       p.setJWTClaimsSetVerifier(claimsVerifier)
@@ -262,30 +262,30 @@ object AccessTokenValidator {
           // where it equals the client_id). Its presence is also enforced by
           // Nimbus via `config.requiredClaims`.
           sub <- Option(claims.getSubject)
-            .toRight((AuthError.InvalidToken.Rejected, "missing sub claim"))
+                   .toRight((AuthError.InvalidToken.Rejected, "missing sub claim"))
           subject <- Subject
-            .either(sub)
-            .left
-            .map(m => (AuthError.InvalidToken.Rejected, m))
+                       .either(sub)
+                       .left
+                       .map(m => (AuthError.InvalidToken.Rejected, m))
           tokenId <- Option(claims.getJWTID) match {
-            case None    => Right(None)
-            case Some(j) =>
-              ReceivedJwtId
-                .either(j)
-                .bimap(m => (AuthError.InvalidToken.Rejected, m), Some(_))
-          }
+                       case None    => Right(None)
+                       case Some(j) =>
+                         ReceivedJwtId
+                           .either(j)
+                           .bimap(m => (AuthError.InvalidToken.Rejected, m), Some(_))
+                     }
           // `exp` is in the default requiredClaims, but that set is
           // operator-configurable — reject rather than NPE if it was relaxed.
           expiresAt <- Option(claims.getExpirationTime)
-            .map(_.toInstant)
-            .toRight((AuthError.InvalidToken.Rejected, "missing exp claim"))
+                         .map(_.toInstant)
+                         .toRight((AuthError.InvalidToken.Rejected, "missing exp claim"))
           // Fail closed on a present-but-malformed cnf: never silently downgrade a
           // sender-constrained token to an unbound one.
           confirmation <- confirmationOf(claims) match {
-            case Cnf.Unbound    => Right(None)
-            case Cnf.Bound(c)   => Right(Some(c))
-            case Cnf.Invalid(r) => Left((AuthError.InvalidToken.Rejected, r))
-          }
+                            case Cnf.Unbound    => Right(None)
+                            case Cnf.Bound(c)   => Right(Some(c))
+                            case Cnf.Invalid(r) => Left((AuthError.InvalidToken.Rejected, r))
+                          }
         } yield AuthContext(
           subject = subject,
           clientId = stringClaim(claims, "client_id")
@@ -305,11 +305,11 @@ object AccessTokenValidator {
       }
     }
 
-    /** Read the `cnf` confirmation (Nimbus-parsed): `jkt` (DPoP, RFC 9449) or
-      * `x5t#S256` (mTLS, RFC 8705). A present-but-malformed `cnf` is reported
-      * as [[Cnf.Invalid]] so a broken binding fails closed rather than silently
-      * downgrading to an unbound token. Enforcement of the binding itself
-      * happens in the middleware, which has access to the request.
+    /**
+      * Read the `cnf` confirmation (Nimbus-parsed): `jkt` (DPoP, RFC 9449) or `x5t#S256` (mTLS, RFC
+      * 8705). A present-but-malformed `cnf` is reported as [[Cnf.Invalid]] so a broken binding
+      * fails closed rather than silently downgrading to an unbound token. Enforcement of the
+      * binding itself happens in the middleware, which has access to the request.
       */
     private def confirmationOf(claims: JWTClaimsSet): Cnf = {
       val jkt =
@@ -372,6 +372,7 @@ object AccessTokenValidator {
             case _ => Nil
           }
       }
+
   }
 
 }

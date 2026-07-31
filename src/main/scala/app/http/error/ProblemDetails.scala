@@ -3,8 +3,9 @@ package app.http.error
 import io.circe.Encoder
 import org.http4s.MediaType
 
-/** RFC 7807 problem-details error body (`application/problem+json`). The wire
-  * shape of a failure — lives in the http layer, never in `domain`.
+/**
+  * RFC 7807 problem-details error body (`application/problem+json`). The wire shape of a failure —
+  * lives in the http layer, never in `domain`.
   */
 final case class ProblemDetails(
     tpe: String,
@@ -17,9 +18,10 @@ final case class ProblemDetails(
 
 object ProblemDetails {
 
-  /** RFC 7807 media type for problem responses. Uses http4s's MimeDB-predefined
-    * constant — resolved at compile time, no runtime parse, no `unsafeParse`
-    * throw, and it carries the registered metadata (binary, compressible).
+  /**
+    * RFC 7807 media type for problem responses. Uses http4s's MimeDB-predefined constant — resolved
+    * at compile time, no runtime parse, no `unsafeParse` throw, and it carries the registered
+    * metadata (binary, compressible).
     */
   val MediaTypeProblemJson: MediaType = MediaType.application.`problem+json`
 
@@ -33,4 +35,5 @@ object ProblemDetails {
       "instance",
       "code"
     )(p => (p.tpe, p.title, p.status, p.detail, p.instance, p.code))
+
 }

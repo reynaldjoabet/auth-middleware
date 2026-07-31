@@ -3,21 +3,24 @@ package app.config
 import java.net.URI
 import java.util.Base64
 
-import javax.crypto.SecretKey
-
 import scala.concurrent.duration.FiniteDuration
 
+import javax.crypto.SecretKey
+import auth.{HttpsUriNoFragment, IssuerUri, NonBlank}
+import auth.accesstoken.AccessTokenConfig
 import auth.dpop.DpopNonceValidator
 import auth.revocation.TokenIntrospection
-import auth.accesstoken.AccessTokenConfig
-import auth.{HttpsUriNoFragment, IssuerUri, NonBlank}
 import com.comcast.ip4s.{Host, Port}
 import app.config.given
+import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
 import io.github.iltotore.iron.pureconfig.given
 import org.http4s.Uri
-import pureconfig.ConfigReader
-import io.github.iltotore.iron.*
+// `_root_.`, because `io.github.iltotore.iron.*` above puts iron's own
+// `pureconfig` subpackage in scope under that name — a plain `import
+// pureconfig.…` then resolves there and fails. Import order decides which one
+// wins, and formatter rules reorder imports, so the prefix is pinned.
+import _root_.pureconfig.ConfigReader
 
 final case class AppConfig(
     http: HttpServerConfig,
@@ -26,7 +29,9 @@ final case class AppConfig(
     redis: RedisSettings
 ) derives ConfigReader
 
-/** Ember server binding and back-pressure knobs. */
+/**
+  * Ember server binding and back-pressure knobs.
+  */
 final case class HttpServerConfig(
     host: Host,
     port: Port,
@@ -35,16 +40,17 @@ final case class HttpServerConfig(
     maxConnections: Int
 ) derives ConfigReader
 
-/** Database connection + HikariCP pool tuning. The password is a [[Secret]] so
-  * the whole case class is safe to log.
+/**
+  * Database connection + HikariCP pool tuning. The password is a [[Secret]] so the whole case class
+  * is safe to log.
   *
   * @param migrateOnStart
-  *   apply pending Flyway migrations during boot, before the server binds. Turn
-  *   it off where migrations are a separate deploy step (a k8s Job, a DBA
-  *   gate); the app then assumes the schema is already current.
+  *   apply pending Flyway migrations during boot, before the server binds. Turn it off where
+  *   migrations are a separate deploy step (a k8s Job, a DBA gate); the app then assumes the schema
+  *   is already current.
   * @param baselineOnMigrate
-  *   see [[app.infra.postgres.Database.migrate]] — a one-shot switch for
-  *   adopting Flyway on a database that already has the schema.
+  *   see [[app.infra.postgres.Database.migrate]] — a one-shot switch for adopting Flyway on a
+  *   database that already has the schema.
   */
 final case class DbConfig(
     host: String,
@@ -69,24 +75,27 @@ final case class AuthSettings(
     dpop: DpopSettings,
     introspection: IntrospectionSettings
 ) derives ConfigReader {
+
   def toAccessTokenConfig: AccessTokenConfig =
     AccessTokenConfig(issuer, audience, URI.create(jwksUri))
+
 }
 
-/** RFC 9449 DPoP sender-constrained tokens. When enabled, the middleware
-  * accepts the `DPoP` scheme and verifies proofs; `nonce` additionally requires
-  * server-provided nonces on every proof (the FAPI 2.0 replay fix).
+/**
+  * RFC 9449 DPoP sender-constrained tokens. When enabled, the middleware accepts the `DPoP` scheme
+  * and verifies proofs; `nonce` additionally requires server-provided nonces on every proof (the
+  * FAPI 2.0 replay fix).
   */
 final case class DpopSettings(
     enabled: Boolean,
     nonce: DpopNonceSettings
 ) derives ConfigReader
 
-/** Stateless (Duende-pattern) nonce keys: base64-encoded AES key material
-  * (16/24/32 bytes) shared by every node via the secret manager, held as
-  * [[Secret]] so it can never leak through a logged config. `key` absent → an
-  * ephemeral per-process key is generated at boot (single-node/dev only; logged
-  * loudly). `previousKeys` keeps in-flight nonces valid during key rotation.
+/**
+  * Stateless (Duende-pattern) nonce keys: base64-encoded AES key material (16/24/32 bytes) shared
+  * by every node via the secret manager, held as [[Secret]] so it can never leak through a logged
+  * config. `key` absent → an ephemeral per-process key is generated at boot (single-node/dev only;
+  * logged loudly). `previousKeys` keeps in-flight nonces valid during key rotation.
   */
 final case class DpopNonceSettings(
     enabled: Boolean,
@@ -101,11 +110,12 @@ final case class DpopNonceSettings(
 
   private def decode(base64: Secret): SecretKey =
     DpopNonceValidator.keyFromBytes(Base64.getDecoder.decode(base64.value))
+
 }
 
-/** RFC 7662 revocation checking against the AS — the Redis-free alternative to
-  * a distributed denylist. Endpoint and client credentials are required when
-  * enabled; the boot fails otherwise.
+/**
+  * RFC 7662 revocation checking against the AS — the Redis-free alternative to a distributed
+  * denylist. Endpoint and client credentials are required when enabled; the boot fails otherwise.
   */
 final case class IntrospectionSettings(
     enabled: Boolean,
@@ -132,4 +142,5 @@ final case class IntrospectionSettings(
         requestTimeout = requestTimeout
       )
     }
+
 }

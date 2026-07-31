@@ -3,14 +3,16 @@ package app.config
 import munit.FunSuite
 import pureconfig.ConfigSource
 
-/** Boot-time configuration invariants: a bad deployment value must fail the
-  * boot (loader forces every conversion), never the first request. Exercises
-  * the full `app.*` tree including the DPoP nonce and introspection settings
-  * shared with the Play stack.
+/**
+  * Boot-time configuration invariants: a bad deployment value must fail the boot (loader forces
+  * every conversion), never the first request. Exercises the full `app.*` tree including the DPoP
+  * nonce and introspection settings shared with the Play stack.
   */
 class AppConfigSpec extends FunSuite {
 
-  /** 32 zero bytes, base64 — valid AES-256 key material for tests. */
+  /**
+    * 32 zero bytes, base64 — valid AES-256 key material for tests.
+    */
   private val testKeyB64 =
     java.util.Base64.getEncoder.encodeToString(new Array[Byte](32))
 
@@ -68,7 +70,7 @@ class AppConfigSpec extends FunSuite {
 
   test("full config loads; nonce key decodes; disabled introspection is None") {
     val cfg = load(s"$dpopOn\n$introspectionOff")
-    val _ = cfg.auth.toAccessTokenConfig // AccessTokenConfig.require holds
+    val _   = cfg.auth.toAccessTokenConfig // AccessTokenConfig.require holds
     assert(cfg.auth.dpop.enabled)
     assert(cfg.auth.dpop.nonce.decodedKey.isDefined)
     assertEquals(cfg.auth.dpop.nonce.decodedPreviousKeys, Nil)
@@ -123,4 +125,5 @@ class AppConfigSpec extends FunSuite {
     assert(ic.isDefined)
     assertEquals(ic.get.clientId, "rs-client")
   }
+
 }

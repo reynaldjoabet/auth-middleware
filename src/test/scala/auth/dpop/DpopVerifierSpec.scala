@@ -1,21 +1,21 @@
 package auth
 package dpop
 
+import java.util.{Date, UUID}
+
+import scala.concurrent.duration.*
+
+import cats.effect.kernel.Resource
+import cats.effect.IO
+
 import auth.dpop.{DpopConfig, DpopVerifier}
 import auth.mtls.Mtls
-
-import cats.effect.IO
-import cats.effect.kernel.Resource
-import com.nimbusds.jose.JOSEObjectType
 import com.nimbusds.jose.{JWSAlgorithm, JWSHeader}
 import com.nimbusds.jose.crypto.ECDSASigner
+import com.nimbusds.jose.JOSEObjectType
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
-import java.util.{Date, UUID}
 import com.nimbusds.oauth2.sdk.dpop.verifiers.DPoPProofUse
-import com.nimbusds.oauth2.sdk.util.singleuse.{
-  AlreadyUsedException,
-  SingleUseChecker
-}
+import com.nimbusds.oauth2.sdk.util.singleuse.{AlreadyUsedException, SingleUseChecker}
 import org.http4s.HttpApp
 import org.http4s.Method
 import org.http4s.Request
@@ -23,9 +23,8 @@ import org.http4s.Response
 import org.http4s.Status
 import org.typelevel.ci.*
 
-import scala.concurrent.duration.*
-
 class DpopVerifierSpec extends DpopBaseSuite {
+
   import TestTokens.*
 
   private def assertDpopRejected(resp: Response[IO]): IO[Unit] = IO {
@@ -41,9 +40,9 @@ class DpopVerifierSpec extends DpopBaseSuite {
     app().use { a =>
       for {
         resp <- a.run(
-          dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
-        )
-        _ = assertEquals(resp.status, Status.Ok)
+                  dpopRequest(token, dpopProof("GET", accountsUri.renderString, token))
+                )
+        _     = assertEquals(resp.status, Status.Ok)
         body <- resp.as[String]
       } yield assertEquals(body, "user-123")
     }
@@ -75,9 +74,9 @@ class DpopVerifierSpec extends DpopBaseSuite {
     app().use { a =>
       for {
         first <- a.run(dpopRequest(token, proof))
-        _ = assertEquals(first.status, Status.Ok)
+        _      = assertEquals(first.status, Status.Ok)
         again <- a.run(dpopRequest(token, proof))
-        _ <- assertDpopRejected(again)
+        _     <- assertDpopRejected(again)
       } yield ()
     }
   }
@@ -150,7 +149,7 @@ class DpopVerifierSpec extends DpopBaseSuite {
 
   test("rejects a missing DPoP proof header") {
     val token = sign(dpopBoundClaims())
-    val req = Request[IO](Method.GET, accountsUri)
+    val req   = Request[IO](Method.GET, accountsUri)
       .putHeaders(org.http4s.Header.Raw(ci"Authorization", s"DPoP $token"))
     app().use(_.run(req).flatMap(assertDpopRejected))
   }
@@ -158,7 +157,7 @@ class DpopVerifierSpec extends DpopBaseSuite {
   test("rejects multiple DPoP proof headers") {
     val token = sign(dpopBoundClaims())
     val proof = dpopProof("GET", accountsUri.renderString, token)
-    val req = Request[IO](Method.GET, accountsUri).putHeaders(
+    val req   = Request[IO](Method.GET, accountsUri).putHeaders(
       org.http4s.Header.Raw(ci"Authorization", s"DPoP $token"),
       org.http4s.Header.Raw(ci"DPoP", proof),
       org.http4s.Header.Raw(ci"DPoP", proof)
@@ -264,9 +263,9 @@ class DpopVerifierSpec extends DpopBaseSuite {
 
   // -- Required proof claims: each must be present (RFC 9449 §4.2-4.3) --------
 
-  /** Sign an arbitrary claims set as a dpop+jwt proof with the bound key, so a
-    * test can omit an individual required claim (which `dpopProof` always
-    * sets).
+  /**
+    * Sign an arbitrary claims set as a dpop+jwt proof with the bound key, so a test can omit an
+    * individual required claim (which `dpopProof` always sets).
     */
   private def signProof(claims: JWTClaimsSet): String = {
     val jwt = new SignedJWT(
@@ -280,7 +279,8 @@ class DpopVerifierSpec extends DpopBaseSuite {
     jwt.serialize()
   }
 
-  /** A proof over `token` that includes each required claim unless toggled off.
+  /**
+    * A proof over `token` that includes each required claim unless toggled off.
     */
   private def proofWith(
       token: String,
@@ -325,17 +325,15 @@ class DpopVerifierSpec extends DpopBaseSuite {
   test("sanity: proofWith with all claims present is accepted") {
     val token = sign(dpopBoundClaims())
     app().use(
-      _.run(dpopRequest(token, proofWith(token))).map(r =>
-        assertEquals(r.status, Status.Ok)
-      )
+      _.run(dpopRequest(token, proofWith(token))).map(r => assertEquals(r.status, Status.Ok))
     )
   }
 
   // -- Injected shared-store single-use checker (multi-node replay) -----------
 
-  /** A trivial shared `SingleUseChecker`, standing in for a Redis-backed store:
-    * two verifier instances (two "nodes") pointed at the same map see each
-    * other's consumed jtis.
+  /**
+    * A trivial shared `SingleUseChecker`, standing in for a Redis-backed store: two verifier
+    * instances (two "nodes") pointed at the same map see each other's consumed jtis.
     */
   private def sharedChecker(): SingleUseChecker[DPoPProofUse] = {
     val seen =
@@ -346,8 +344,9 @@ class DpopVerifierSpec extends DpopBaseSuite {
         throw new AlreadyUsedException("jti already used")
   }
 
-  /** A middleware "node" whose verifier uses the supplied single-use checker
-    * (or the default per-node in-memory one when `None`).
+  /**
+    * A middleware "node" whose verifier uses the supplied single-use checker (or the default
+    * per-node in-memory one when `None`).
     */
   private def node(
       checker: Option[SingleUseChecker[DPoPProofUse]]
@@ -372,9 +371,9 @@ class DpopVerifierSpec extends DpopBaseSuite {
   test(
     "a shared single-use checker catches a proof replayed onto another node"
   ) {
-    val token = sign(dpopBoundClaims())
-    val proof = dpopProof("GET", accountsUri.renderString, token)
-    val shared = sharedChecker()
+    val token   = sign(dpopBoundClaims())
+    val proof   = dpopProof("GET", accountsUri.renderString, token)
+    val shared  = sharedChecker()
     val cluster = for {
       a <- node(Some(shared))
       b <- node(Some(shared))
@@ -382,17 +381,17 @@ class DpopVerifierSpec extends DpopBaseSuite {
     cluster.use { case (nodeA, nodeB) =>
       for {
         first <- nodeA.run(dpopRequest(token, proof))
-        _ = assertEquals(first.status, Status.Ok)
+        _      = assertEquals(first.status, Status.Ok)
         // Same proof to a *different* node: rejected, checker is shared.
         replay <- nodeB.run(dpopRequest(token, proof))
-        _ <- assertDpopRejected(replay)
+        _      <- assertDpopRejected(replay)
       } yield ()
     }
   }
 
   test("the default per-node checker does NOT catch a cross-node replay") {
-    val token = sign(dpopBoundClaims())
-    val proof = dpopProof("GET", accountsUri.renderString, token)
+    val token   = sign(dpopBoundClaims())
+    val proof   = dpopProof("GET", accountsUri.renderString, token)
     val cluster = for {
       a <- node(None)
       b <- node(None)
@@ -400,12 +399,13 @@ class DpopVerifierSpec extends DpopBaseSuite {
     cluster.use { case (nodeA, nodeB) =>
       for {
         first <- nodeA.run(dpopRequest(token, proof))
-        _ = assertEquals(first.status, Status.Ok)
+        _      = assertEquals(first.status, Status.Ok)
         // Each node has its own in-memory checker, so node B never saw the jti —
         // the gap the injected shared-store checker closes.
         replay <- nodeB.run(dpopRequest(token, proof))
-        _ = assertEquals(replay.status, Status.Ok)
+        _       = assertEquals(replay.status, Status.Ok)
       } yield ()
     }
   }
+
 }

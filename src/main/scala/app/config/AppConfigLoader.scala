@@ -4,8 +4,9 @@ import cats.effect.Sync
 import cats.syntax.either.*
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
-import pureconfig.ConfigSource
+
 import pureconfig.error.ConfigReaderException
+import pureconfig.ConfigSource
 
 object AppConfigLoader {
 
@@ -26,4 +27,5 @@ object AppConfigLoader {
         val _ = cfg.auth.dpop.nonce.decodedPreviousKeys
       }.void
     )
+
 }

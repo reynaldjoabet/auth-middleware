@@ -1,4 +1,5 @@
 package auth
+
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
 import io.github.iltotore.iron.constraint.collection.*
@@ -10,9 +11,9 @@ import org.http4s.Uri.Scheme
 import org.typelevel.ci.*
 
 given CanEqual[CIString, CIString] = CanEqual.derived
-given CanEqual[Scheme, Scheme] = CanEqual.derived
-given CanEqual[Method, Method] = CanEqual.derived
-given CanEqual[Path, Path] = CanEqual.derived
+given CanEqual[Scheme, Scheme]     = CanEqual.derived
+given CanEqual[Method, Method]     = CanEqual.derived
+given CanEqual[Path, Path]         = CanEqual.derived
 
 // Issuer must reject query AND fragment
 type IssuerUri = Match["^https://[^?#\\s]+$"]
@@ -28,13 +29,14 @@ type NonBlank =
 // Client-controlled charset for values YOU mint. For values you RECEIVE
 // from third parties, prefer the wider RFC grammars below.
 
-type ClientIdentifier = Match["^[A-Za-z0-9._~:/-]{1,128}$"]
+type ClientIdentifier   = Match["^[A-Za-z0-9._~:/-]{1,128}$"]
 type Base64UrlNoPadding = Match["^[A-Za-z0-9_-]+$"]
 // SHA-256 base64url is exactly 43 chars (cnf.jkt, cnf.x5t#S256, ath).
 type Base64UrlSha256 = Match["^[A-Za-z0-9_-]{43}$"]
 
 // 3rd group + (signature REQUIRED) — rejects unsecured/alg:none shape.
 type JwtCompact = Match["^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"]
+
 // JWE compact (5 segments) for signed-and-encrypted request objects / id tokens.
 type JweCompact =
   Match[
@@ -42,16 +44,16 @@ type JweCompact =
   ]
 
 type PkceS256Challenge = Match["^[A-Za-z0-9_-]{43}$"]
-type PkceVerifierC = Match["^[A-Za-z0-9\\-._~]{43,128}$"]
+type PkceVerifierC     = Match["^[A-Za-z0-9\\-._~]{43,128}$"]
 
 // Values you MINT — strict entropy/charset is appropriate.
 type OAuthState = Match["^[\\x21\\x23-\\x5B\\x5D-\\x7E]{16,2048}$"]
-type OidcNonce = Match["^[A-Za-z0-9._~-]{16,64}$"]
+type OidcNonce  = Match["^[A-Za-z0-9._~-]{16,64}$"]
 // jti is opaque (RFC 7519)Only bound size.
 type JwtIdC = NonBlank & MaxLength[256]
 
 type NonNegativeMinorUnits = GreaterEqual[0]
-type PositiveMinorUnits = Greater[0]
+type PositiveMinorUnits    = Greater[0]
 
 type ParExpiresInSeconds = Positive
 
@@ -68,7 +70,7 @@ type RequestUriC =
 type EmailAddressC = Match["^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"]
 
 type NonEmptyList[A] = List[A] :| MinLength[1]
-type NonEmptySet[A] = Set[A] :| MinLength[1]
+type NonEmptySet[A]  = Set[A] :| MinLength[1]
 
 type Issuer = Issuer.T
 object Issuer extends RefinedType[String, IssuerUri]
@@ -78,8 +80,7 @@ object AuthorizationEndpoint extends RefinedType[String, HttpsUriNoFragment]
 type TokenEndpoint = TokenEndpoint.T
 object TokenEndpoint extends RefinedType[String, HttpsUriNoFragment]
 type PushedAuthorizationRequestEndpoint = PushedAuthorizationRequestEndpoint.T
-object PushedAuthorizationRequestEndpoint
-    extends RefinedType[String, HttpsUriNoFragment]
+object PushedAuthorizationRequestEndpoint extends RefinedType[String, HttpsUriNoFragment]
 type JwksUri = JwksUri.T
 object JwksUri extends RefinedType[String, HttpsUriNoFragment]
 type RedirectUri = RedirectUri.T
@@ -99,12 +100,10 @@ object Subject
     ] // ADDED max (OIDC sub ≤ 255)
 
 type ScopeToken = ScopeToken.T
-object ScopeToken
-    extends RefinedType[String, Match["^[A-Za-z0-9._~:/-]{1,128}$"]]
+object ScopeToken extends RefinedType[String, Match["^[A-Za-z0-9._~:/-]{1,128}$"]]
 // use this when PARSING scopes from a token issued elsewhere (RFC 6749 NQCHAR).
 type ScopeTokenRfc = ScopeTokenRfc.T
-object ScopeTokenRfc
-    extends RefinedType[String, Match["^[\\x21\\x23-\\x5B\\x5D-\\x7E]+$"]]
+object ScopeTokenRfc extends RefinedType[String, Match["^[\\x21\\x23-\\x5B\\x5D-\\x7E]+$"]]
 
 type AuthorizationCode = AuthorizationCode.T
 object AuthorizationCode extends RefinedType[String, NonBlank]
@@ -123,8 +122,7 @@ type DpopProofJwt = DpopProofJwt.T
 object DpopProofJwt extends RefinedType[String, JwtCompact]
 
 type PkceVerifier = PkceVerifier.T
-object PkceVerifier
-    extends RefinedType[String, Match["^[A-Za-z0-9\\-._~]{43,128}$"]]
+object PkceVerifier extends RefinedType[String, Match["^[A-Za-z0-9\\-._~]{43,128}$"]]
 type PkceChallenge = PkceChallenge.T
 object PkceChallenge extends RefinedType[String, PkceS256Challenge]
 
@@ -137,34 +135,37 @@ object JwtId extends RefinedType[String, JwtIdC] // SHA-256 fixed length.
 
 // You mint it → you control the format → total construction from a trusted generator.
 type MintedJwtId = MintedJwtId.T
-object MintedJwtId
-    extends RefinedType[String, Match["^[A-Za-z0-9._~-]{16,256}$"]]
+object MintedJwtId extends RefinedType[String, Match["^[A-Za-z0-9._~-]{16,256}$"]]
 
 // A peer authored it → accept anything RFC-legal, bound only for DoS safety →
 // fallible: .either at the edge, may reject.
 type ReceivedJwtId = ReceivedJwtId.T
 object ReceivedJwtId extends RefinedType[String, Not[Blank] & MaxLength[256]]
 
-/** Curated `acr` values the authorization server mints into id tokens (as
-  * opposed to the opaque [[Acr]] newtype an RS sees on the wire). `Other` keeps
-  * an unrecognised value representable so policy can reject it explicitly
-  * rather than failing to parse the token.
+/**
+  * Curated `acr` values the authorization server mints into id tokens (as opposed to the opaque
+  * [[Acr]] newtype an RS sees on the wire). `Other` keeps an unrecognised value representable so
+  * policy can reject it explicitly rather than failing to parse the token.
   */
 enum AcrValue {
+
   case Level1, Level2, Level3, PhishingResistant, TransactionSigning
   case Other(value: String)
+
 }
 
 enum Amr {
+
   case Password, Otp, Sms, WebAuthn, Fido2, SmartCard, DeviceBinding, BankSCA
   case Other(value: String)
+
 }
 
-/** Authentication Context Class Reference (`acr`) as received in a token.
-  * Unlike the curated [[AcrValue]] enum (which the AS mints into id tokens),
-  * the value an RS sees is an opaque, IdP-defined string — often a URN such as
-  * `urn:openbanking:psd2:sca` — so it is modelled as a non-blank newtype and
-  * compared for equality during step-up.
+/**
+  * Authentication Context Class Reference (`acr`) as received in a token. Unlike the curated
+  * [[AcrValue]] enum (which the AS mints into id tokens), the value an RS sees is an opaque,
+  * IdP-defined string — often a URN such as `urn:openbanking:psd2:sca` — so it is modelled as a
+  * non-blank newtype and compared for equality during step-up.
   */
 type Acr = Acr.T
 object Acr extends RefinedType[String, NonBlank]
@@ -196,43 +197,57 @@ object EmailAddress extends RefinedType[String, EmailAddressC]
 enum ClientAuthenticationMethod {
   case PrivateKeyJwt, TlsClientAuth, SelfSignedTlsClientAuth
 }
+
 enum SenderConstrainedMethod {
   case MTls, DPoP
 }
 
-/** One signing-alg set, reused for token-endpoint auth, DPoP proofs and id
-  * tokens.
+/**
+  * One signing-alg set, reused for token-endpoint auth, DPoP proofs and id tokens.
   */
 enum FapiSigningAlg {
   case PS256, ES256, EdDSA
 }
+
 enum AccessTokenFormat {
   case Opaque, Jwt
 }
+
 enum TokenUse {
+
   case AccessToken, RefreshToken, IdToken, ClientAssertion, RequestObject,
     DpopProof, JarmResponse
+
 }
+
 enum SubjectType {
   case Public, Pairwise
 }
+
 enum HttpMethod {
   case GET, POST, PUT, PATCH, DELETE
 }
 
-/** RFC 7800 confirmation claim. Two cases mirror Nimbus's two confirmation
-  * types, so a token can never carry both bindings or neither.
+/**
+  * RFC 7800 confirmation claim. Two cases mirror Nimbus's two confirmation types, so a token can
+  * never carry both bindings or neither.
   */
 enum ConfirmationClaim {
+
   case DPoP(jkt: JwkThumbprint)
   case MutualTls(x5tS256: CertificateThumbprint)
+
 }
 
-/** The three outcomes of reading the RFC 7800 `cnf` confirmation. */
+/**
+  * The three outcomes of reading the RFC 7800 `cnf` confirmation.
+  */
 enum Cnf derives CanEqual {
-  case Unbound // no cnf present — not sender-constrained
+
+  case Unbound                         // no cnf present — not sender-constrained
   case Bound(claim: ConfirmationClaim) // a well-formed jkt / x5t#S256 binding
-  case Invalid(reason: String) // cnf present but malformed, or both members
+  case Invalid(reason: String)         // cnf present but malformed, or both members
+
 }
 
 type Role = Role.T

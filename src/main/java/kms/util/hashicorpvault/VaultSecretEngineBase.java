@@ -15,11 +15,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.bettercloud.vault.VaultException;
 
-import io.ebean.annotation.EnumValue;
 import kms.util.EncryptionAtRestUtil.KeyType;
 
 /**
@@ -27,20 +27,17 @@ import kms.util.EncryptionAtRestUtil.KeyType;
  * Secret Engine The secret engine is used to encrypt / decrypt universe keys
  */
 public abstract class VaultSecretEngineBase {
-  public static final Logger LOG = LoggerFactory.getLogger(VaultTransit.class);
+  public static final Logger LOG = LoggerFactory.getLogger(VaultSecretEngineBase.class);
 
   /**
    * com.bettercloud.vault.api.mounts.MountTypes enum has all types of secret engine Currently we
    * are using only following
    */
   public enum KMSEngineType {
-    @EnumValue("transit") // only supported use case so far
     TRANSIT,
 
-    @EnumValue("gcpkms") // not supported yet
     GCPKMS,
 
-    @EnumValue("keymgmt") // not supported yet
     KEYMGMT;
 
     /** These strings are used in forming path. The same goes to the vault library. */
@@ -60,19 +57,14 @@ public abstract class VaultSecretEngineBase {
 
   /** Operations enum : key operations related to usage of secret engine keys */
   public enum VaultOperations {
-    @EnumValue("keys")
     KEYS,
 
-    @EnumValue("encrypt")
     ENCRYPT,
 
-    @EnumValue("decrypt")
     DECRYPT,
 
-    @EnumValue("rotate")
     ROTATE,
 
-    @EnumValue("rewrap")
     RERWAP;
 
     /** These strings are used in forming path. The same goes to the vault library. */
@@ -135,6 +127,19 @@ public abstract class VaultSecretEngineBase {
     String path = mountPath + op.toString() + "/" + keyName;
     LOG.debug("Generating path : {}", path);
     return path;
+  }
+
+  /**
+   * Guards the invariants the constructor relies on. The upstream YugabyteDB
+   * version also validated against VaultAccessor, which this copy does not carry.
+   */
+  protected void checkForEngineType() {
+    if (engineType == null) {
+      throw new IllegalArgumentException("KMS engine type must be set");
+    }
+    if (mountPath == null || !mountPath.endsWith("/")) {
+      throw new IllegalArgumentException("Mount path must end in '/': " + mountPath);
+    }
   }
 
   public abstract void checkForPermissions() throws Exception;

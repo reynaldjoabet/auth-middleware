@@ -1483,6 +1483,628 @@ AWS KMS keys are restricted to encrypting payloads up to 4 kilobytes ([01:30]). 
 - Unwrapping the DEK: The service sends the stored encrypted DEK to KMS, which uses the root KMS key to decrypt it and return a plain-text DEK
 - Data Decryption: The calling service uses the returned plain-text DEK to decrypt the data payload locally, then discards the plain-text DEK once again
 
+## Alternative: Client-Side Envelope Encryption
+- Step 1: Your system generates a temporary, plaintext DEK in memory.
+- Step 2: You use the plaintext `DEK` to encrypt the data payload.
+- Step 3: You send the plaintext `DEK` to your Key Management Service (like Azure Key Vault or AWS KMS).
+- Step 4: The KMS uses the `KEK` to wrap the `DEK`, returning the encrypted version of the DEK.
+- Step 5: You store the encrypted data alongside the wrapped `DEK`. The plaintext `DEK` is dropped from memory.
 ### Why Envelope Encryption Matters
 - Performance & Scale: Encrypting massive files directly via KMS network calls would create severe latency and API bottlenecks . Local DEK encryption removes these limits.
 - Separation of Duties: KMS acts solely as a secure authority to manage and protect the keys that unlock your data, rather than processing large data volumes directly
+
+
+## KMS generates the DEK 
+- `GenerateDataKeyWithoutPlaintextResponse`
+-  GenerateDataEncryptionKey with .includePlaintextKey(false), AES-256.
+- SmartKey — different again: POST /crypto/v1/keys creates the key inside SmartKey and YBA stores just the returned kid (key id) as the key ref.
+
+## generates the DEK, then ships it out to be wrapped
+
+- Azure — SecureRandom.getInstanceStrong() locally, then wrapKey(RSA_OAEP) against the Key Vault key. 
+- Hashicorp Vault — KeyGenerator AES-256 locally, then Transit encryptString. 
+- CipherTrust — SecureRandom locally, then encryptKeyWithEncryptionContext. 
+
+
+## JWT Profile for OAuth 2.0 Client Authentication (RFC 7523)
+
+### Machine-to-Machine (M2M) Authentication
+
+This is the most common use case. When a backend service (like a microservice or an automated job) needs to talk to another service, it uses the Client Credentials Flow. Historically, this required the service to send a `client_id` and a static `client_secret`.
+
+#### The RFC 7523 Solution:
+Instead of a secret, the client generates a JWT, signs it with its own private key, and sends it to the authorization server (like Keycloak or Duende IdentityServer). The server verifies the signature using the client's public key.
+
+No more storing static secrets in configuration files or worrying about rotating them. It shifts authentication to asymmetric cryptography, which is inherently more secure.
+
+### Workload Identity Federation
+
+This is the mechanism used by GitHub Actions or Kubernetes when interacting with external cloud providers
+
+A workload (like a CI/CD pipeline or a container) needs access to a cloud resource, but you don't want to hardcode cloud credentials into the workload's environment variables.
+
+#### The RFC 7523 Solution:
+- The workload's environment (e.g., GitHub) acts as an Identity Provider (IdP) and issues an ID token (JWT) attesting to the workload's identity.
+- The workload sends this JWT to the cloud provider's authorization server as a `client_assertion`.
+- The cloud provider has a trust policy established with the IdP, verifies the token, and issues a short-lived access token.
+
+### Open Banking and FAPI (Financial-grade API) Security
+
+In highly regulated sectors like open banking, security requirements are significantly stricter than standard OAuth. Financial-grade API (FAPI) profiles explicitly prohibit the use of basic client secrets.
+
+#### The RFC 7523 Solution:
+When a third-party application (like a budgeting app) requests access to a user's bank account, it must authenticate itself to the bank's authorization server using a signed JWT (Private Key JWT).
+It provides non-repudiation. Because the JWT is signed with a private key only the client possesses, the bank has mathematical proof that the request came from that specific registered application.
+
+### Dynamic Client Registration (DCR)
+
+In scenarios where client applications are registered dynamically (e.g., a mobile app registering itself with a backend upon first launch), securely authenticating that registration request is challenging.
+
+#### The RFC 7523 Solution:
+A software statement—a JWT issued by a trusted third party or a central registry—is used as the assertion during the dynamic registration process. The authorization server verifies this token to ensure the client is authorized to register.
+
+![alt text](image-4.png)
+
+Workload Identity allows pods to access Azure resources using Azure managed identities and removes the need to store any credential secrets. For example, given a workload that may store files in Azure Storage, when it needs to access those files, the pod authenticates itself against the resource as an Azure managed identity.
+
+AAD Workload Identity for AKS integrates with the Kubernetes native capabilities to federate with any external identity providers. The feature sunsets the existing AAD Pod-Managed Identity offering and makes it easier to use and deploy, and overcome several limitations in AAD Pod-Managed Identity.
+
+
+- Enable OIDC Issuer and Workload Identity features on the AKS cluster
+- Create a Managed Identity in Azure
+- Create a Service Account in Kubernetes
+- Create a Keyvault secret and grant the Managed Identity access to read secrets
+- Establish a Federated Trust between Kubernetes and AAD
+- Deploy a sample application and validate it can access the Keyvault secret using the Managed Identity
+
+
+## Enable ODIC and Workload Identity on the AKS Cluster
+
+Execute the following CLI command to enable oidc-issuer and to enable workload identity on your AKS cluster. This operation will take several minutes. 
+
+`az aks update --resource-group $RG_NAME --name $CLUSTER_NAME --enable-oidc-issuer --enable-workload-identity`
+
+- The OIDC Issuer feature allows Azure Active Directory (Azure AD) or other cloud provider identity and access management platforms, to discover the API server’s public signing keys.
+- The Azure AD Workload Identity feature for Kubernetes integrates with the capabilities native to Kubernetes to federate with external identity providers. It allows for workloads in your AKS cluster to make use of AAD Managed Identities
+
+## Set the ODIC Issuer URL to a variable for usage later. 
+
+```sh
+export AKS_OIDC_ISSUER="$(az aks show -n $CLUSTER_NAME -g $RG_NAME --query "oidcIssuerProfile.issuerUrl" -otsv)"
+echo $AKS_OIDC_ISSUER
+echo "$AKS_OIDC_ISSUER/.well-known/openid-configuration"
+```
+
+## Verify that you now see a mutating webhook pod on your cluster. The mutating admission webhook is used to project a signed service account token to a workload’s volume and inject environment variables to pods. 
+
+
+```sh
+az aks get-credentials --resource-group $RG_NAME  --name $CLUSTER_NAME --admin --overwrite
+kubectl get pods -n kube-system | grep webhook
+```
+
+[workload identity lab](https://azure.github.io/AKS-DevSecOps-Workshop/modules/Module1/lab-workloadidentity.html)
+
+## Workload Identity in Kubernetes 
+
+### Step 1 — The admission webhook mutates the Pod spec
+Before the kubelet is involved at all, a mutating admission webhook (Azure Workload Identity, EKS Pod Identity) rewrites the Pod spec to add the projected volume, the volume mount, and the SDK environment variables. If you're hand-rolling this, you write the volume yourself:
+
+```yaml
+volumes:
+  - name: cloud-provider-token
+    projected:
+      sources:
+        - serviceAccountToken:
+            path: oidc-token
+            expirationSeconds: 3600   # default; minimum 600
+            audience: "api://AzureADTokenExchange"
+```			
+One audience per projected source — the field is a single string, not a list. A Pod authenticating to two providers needs two sources at two paths.
+
+### Step 2 — Kubelet calls the TokenRequest API
+During volume setup, before containers start, the kubelet POSTs to `/api/v1/namespaces/<ns>/serviceaccounts/<name>/token` with the requested audience, TTL, and a `boundObjectRef` pointing at the Pod.
+
+### Step 3 — The API server mints and signs
+
+{
+  "aud": ["api://AzureADTokenExchange"],
+  "iss": "https://eastus.oic.prod-aks.azure.com/<tenant-guid>/<cluster-guid>/",
+  "sub": "system:serviceaccount:default:payment-service-sa",
+  "iat": 1722776400,
+  "nbf": 1722776400,
+  "exp": 1722780000,
+  "jti": "b0e1...",
+  "kubernetes.io": {
+    "namespace": "default",
+    "pod":            { "name": "payment-service-pod-123", "uid": "a1b2c3d4-..." },
+    "serviceaccount": { "name": "payment-service-sa",      "uid": "e5f6g7h8-..." },
+    "node":           { "name": "aks-nodepool1-4242",      "uid": "i9j0k1l2-..." }
+  }
+}
+Your original example paired an EKS issuer with an Azure audience — that token would be rejected by both. `iss` and `aud` must be consistent with one provider's trust configuration. `iat`, `nbf`, `jti`, and `node` were also missing; `jti` and `node` come from feature gates that are on by default in current versions.
+
+### Step 4 — Kubelet writes it to tmpfs
+The projected volume is wrapped in an emptyDir with `Medium: StorageMediumMemory`. Never on the node's disk, never in etcd as a Secret. Note that memory-backed volumes count against the Pod's memory limit.
+
+### Step 5 — The application presents the token
+
+RFC 7523 defines two separate uses, and the workload-identity ecosystem is split across them plus a third spec entirely:
+
+| Provider | Wire protocol | Parameter carrying the SA token |
+| --- | --- | --- |
+| Entra ID | RFC 7523 §2.2 client auth | `client_assertion` |
+| Google Cloud | RFC 8693 token exchange | `subject_token` |
+| AWS STS | `AssumeRoleWithWebIdentity` — not OAuth | `WebIdentityToken` |
+
+So the AWS case never touches RFC 7523. It's a proprietary AWS API action taking a query parameter; AWS just happens to validate the JWT via OIDC discovery. The JWT is portable; the exchange protocol is not.
+
+The distinction between `client_assertion `and `subject_token` is semantic, not cosmetic. With `client_assertion` you are authenticating as the client — the resulting access token's identity is the registered Entra application, and the Kubernetes ServiceAccount is only the thing that proved you're allowed to act as it. With RFC 8693 the SA token is the subject being exchanged.
+
+For Entra specifically, your description is exactly right:
+
+```sh
+grant_type=client_credentials
+client_id=<app registration or user-assigned managed identity>
+scope=https://graph.microsoft.com/.default
+client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+client_assertion=<the projected SA token>
+```
+standard `private_key_jwt` is self-signed, with `iss == sub == client_id`. A Kubernetes SA token breaks both — signed by the cluster, sub is `system:serviceaccount:....` RFC 7521 §5.2 permits third-party-issued assertions, so Entra is on-spec, but most authorization servers never implemented that profile. Duende and Keycloak do not accept these out of the box — Duende's maintainers explicitly declined to add it, so it requires a custom `ISecretValidator`.
+
+### Step 6 — Verification: two corrections
+The verifier usually does not fetch from your API server. On managed clusters the provider publishes the discovery document and JWKS to a separate, publicly reachable endpoint (`https://oidc.eks.<region>.amazonaws.com/id/...`, `https://<region>.oic.prod-aks.azure.com/...`). The cluster's API server is typically firewalled or private. On self-managed clusters you must publish this yourself — commonly an S3 bucket plus `--service-account-jwks-uri` — and grant anonymous access to `system:service-account-issuer-discovery`, which is not bound to `system:unauthenticated` by default.
+
+Signature verification alone is not sufficient, and this is the security The provider matches the token against a pre-registered trust binding on `iss` + `sub` + `aud`:
+- Entra: a federated identity credential on the app/UAMI
+- AWS: the IAM role's trust policy Condition on `sub` and `aud`
+- GCP: the workload identity pool provider's attribute mapping and condition
+Getting the `sub` wildcard wrong in an AWS trust policy is the classic privilege-escalation bug here.
+
+### Step 7 — The SDK finds the token
+
+```sh
+# AWS (EKS Pod Identity webhook)
+AWS_WEB_IDENTITY_TOKEN_FILE=/var/run/secrets/eks.amazonaws.com/serviceaccount/token
+AWS_ROLE_ARN=arn:aws:iam::123456789012:role/payment-service
+
+# Azure (azure-workload-identity webhook)
+AZURE_FEDERATED_TOKEN_FILE=/var/run/secrets/azure/tokens/azure-identity-token
+AZURE_CLIENT_ID=<guid>
+AZURE_TENANT_ID=<guid>
+AZURE_AUTHORITY_HOST=https://login.microsoftonline.com/
+```
+Your Azure path (`/var/run/secrets/tokens/oidc-token`) is what you'd get from the hand-rolled YAML above; the webhook injects a different one. And the token file alone is never enough — AWS needs `AWS_ROLE_ARN`, Azure needs client and tenant IDs.
+
+
+
+What the API server actually provides is OIDC discovery: `/.well-known/openid-configuration` and `/openid/v1/jwks` (pkg/serviceaccount/openidmetadata.go:42-47). The metadata advertises only:
+```sh
+ResponseTypes: []string{"id_token"}, // Kubernetes only produces ID tokens
+```
+
+There's no `authorization_endpoint`, no `token_endpoint`, no nonce, no client credentials. It's an ID-token-shaped JWT plus a published JWKS — enough for a relying party doing signature + `iss/aud/exp` validation, which is exactly what AWS STS does.
+
+external verification only works if `--service-account-issuer` is a URL the verifier can actually reach. The default `https://kubernetes.default.svc.cluster.local` is not publicly resolvable. EKS/GKE/AKS publish a real URL for you; on self-managed clusters you must expose the discovery doc yourself
+
+```go
+// ServiceAccountTokenProjection represents a projected service account token
+// volume. This projection can be used to insert a service account token into
+// the pods runtime filesystem for use against APIs (Kubernetes API Server or
+// otherwise).
+type ServiceAccountTokenProjection struct {
+	// audience is the intended audience of the token. A recipient of a token
+	// must identify itself with an identifier specified in the audience of the
+	// token, and otherwise should reject the token. The audience defaults to the
+	// identifier of the apiserver.
+	// +optional
+	Audience string `json:"audience,omitempty" protobuf:"bytes,1,rep,name=audience"`
+	// expirationSeconds is the requested duration of validity of the service
+	// account token. As the token approaches expiration, the kubelet volume
+	// plugin will proactively rotate the service account token. The kubelet will
+	// start trying to rotate the token if the token is older than 80 percent of
+	// its time to live or if the token is older than 24 hours.Defaults to 1 hour
+	// and must be at least 10 minutes.
+	// +optional
+	ExpirationSeconds *int64 `json:"expirationSeconds,omitempty" protobuf:"varint,2,opt,name=expirationSeconds"`
+	// path is the path relative to the mount point of the file to project the
+	// token into.
+	Path string `json:"path" protobuf:"bytes,3,opt,name=path"`
+}
+```
+
+```go
+// requiresRefresh returns true if the token is older than 80% of its total
+// ttl, or if the token is older than 24 hours.
+func (m *Manager) requiresRefresh(ctx context.Context, tr *authenticationv1.TokenRequest) bool {
+	if tr.Spec.ExpirationSeconds == nil {
+		cpy := tr.DeepCopy()
+		cpy.Status.Token = ""
+		logger := klog.FromContext(ctx)
+		logger.Error(nil, "Expiration seconds was nil for token request", "tokenRequest", cpy)
+		return false
+	}
+	now := m.clock.Now()
+	exp := tr.Status.ExpirationTimestamp.Time
+	iat := exp.Add(-1 * time.Duration(*tr.Spec.ExpirationSeconds) * time.Second)
+
+	jitter := time.Duration(rand.Float64()*maxJitter.Seconds()) * time.Second
+	if now.After(iat.Add(maxTTL - jitter)) {
+		return true
+	}
+	// Require a refresh if within 20% of the TTL plus a jitter from the expiration time.
+	if now.After(exp.Add(-1*time.Duration((*tr.Spec.ExpirationSeconds*20)/100)*time.Second - jitter)) {
+		return true
+	}
+	return false
+}
+```
+Kubelet refreshes at 80% of TTL or 24 hours, whichever comes first 
+
+The Azure Workload Identity webhook projects the token, and the SDK POSTs to the token endpoint with:
+```sh
+grant_type=client_credentials
+client_id=<app registration or UAMI client id>
+scope=https://graph.microsoft.com/.default
+client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+client_assertion=<the projected Kubernetes SA token>
+```
+
+
+## Projected Volume
+In Kubernetes, a projected volume is a specific type of volume that allows you to take several different data sources and map (or "project") them into a single directory inside your Pod's file system.
+
+Instead of dealing with multiple scattered mounts, you get one unified folder.
+
+Before projected volumes were introduced, if an application needed a database password (Secret), a configuration file (ConfigMap), and a token (ServiceAccountToken), you had to define three separate volumes in your YAML and mount them to three separate paths in your container (e.g., `/etc/certs`, `/etc/config`, `/var/run/secrets`).
+
+
+
+
+```yaml
+volumes:
+  - name: all-in-one-credentials
+    projected:
+      sources:
+        # 1. The OIDC JWT for cloud access
+        - serviceAccountToken:
+            path: cloud-token
+            audience: "api://aws-iam"
+            
+        # 2. A database password from a K8s Secret
+        - secret:
+            name: db-credentials
+            items:
+              - key: password
+                path: db-password.txt
+                
+        # 3. The Pod's name via the Downward API
+        - downwardAPI:
+            items:
+              - path: "pod-name.txt"
+                fieldRef:
+                  fieldPath: metadata.name
+```
+Here is how you would configure a single projected volume that hands your application a cloud token, a database password, and the Pod's name, all neatly organized in` /var/app/credentials`
+
+`client_assertion normally means "a JWT the client signed about itself," but a Kubernetes token is "a JWT the cluster signed about a Pod" — and most identity servers only know how to handle the first kind.`
+
+
+A normal private_key_jwt assertion — what Duende expects your app to send:
+```json
+{
+  "iss": "payment-service",              // the client_id
+  "sub": "payment-service",              // the client_id again
+  "aud": "https://id.mycompany.com",     // Duende's own URL
+  "exp": 1722780000,
+  "jti": "unique-per-request"
+}
+```
+Signed with: a private key your app holds. Duende looks up the client `payment-service`, finds the matching public key you registered on it, and verifies.
+
+A Kubernetes service account token — what's actually in the file:
+
+```json
+{
+  "iss": "https://eastus.oic.prod-aks.azure.com/<guid>/<guid>/",  // the cluster
+  "sub": "system:serviceaccount:default:payment-service-sa",       // not a client_id
+  "aud": "api://AzureADTokenExchange",
+  "exp": 1722780000
+}
+```
+Signed with: the cluster's key. Your app holds no key at all — that's the entire point of workload identity.
+
+Entra has a lookup table. A federated identity credential is literally a stored row saying:
+
+if `iss = https://eastus.oic.prod-aks.azure.com/…` and `sub = system:serviceaccount:default:payment-service-sa `and `aud = api://AzureADTokenExchange `→ then treat this request as client <your app's guid>, and fetch the signing keys from that issuer's JWKS.
+
+`Duende has no built-in federated-credential feature`
+
+
+## Your options for Duende
+### Option 1 — Don't use the K8s token. (What Duende recommends.)
+Give the Pod a certificate via cert-manager, mount it, use standard `private_key_jwt`. Boring, supported, works today. Cost: you're back to managing key material, which is what you were trying to escape.
+
+### Option 2 — Use token exchange (RFC 8693) instead of client assertion.
+
+### Option 3 — Custom ISecretValidator.
+Rebuild Entra's lookup table yourself: fetch the cluster's discovery doc, verify the signature, map `sub` → client
+
+
+```sh
+RFC 7521 — Assertion Framework (abstract: "use a signed blob instead of a secret")
+├── RFC 7522 — SAML 2.0 profile
+└── RFC 7523 — JWT profile          ← "the JWT profile"
+    ├── §2.1  JWT authorization grant      → parameter: assertion
+    └── §2.2  JWT client authentication    → parameter: client_assertion
+        ├── private_key_jwt      (OIDC Core §9 name — asymmetric)
+        └── client_secret_jwt    (OIDC Core §9 name — HMAC)
+```
+
+### §2.1 — authorization grant. 
+The JWT is the grant. It answers "on whose behalf, and by what authority?"
+```http
+POST /token
+grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer   ← the assertion IS the grant
+&assertion=eyJhbGciOiJSUzI1NiJ9...
+```
+
+### §2.2 — client authentication. 
+The JWT replaces the client password. It answers "which client is calling?"
+
+```http
+POST /token
+grant_type=client_credentials                    ← still need a grant
+&scope=api.read
+&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+&client_assertion=eyJhbGciOiJSUzI1NiJ9...
+```
+
+there are two things in that request: a `grant_type` and a `client_assertion.` The assertion is not the grant — it's the credential. It could equally accompany `grant_type=authorization_code` or `refresh_token`.
+
+```sh
+POST /token
+grant_type=authorization_code
+&code=SplxlOBeZQQYbYS6WxSbIA
+&redirect_uri=https://app.example.com/callback
+&code_verifier=dBjftJeZ4CVP...
+&client_id=payment-service
+&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+&client_assertion=eyJhbGciOiJSUzI1NiJ9...
+```
+```sh
+POST /token
+grant_type=refresh_token
+&refresh_token=8xLOxBtZp8
+&client_id=payment-service
+&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+&client_assertion=eyJhbGciOiJSUzI1NiJ9...
+
+```
+
+`client_secret_jwt` is barely better than `client_secret_post` — the server still holds a secret that can impersonate the client. `private_key_jwt` is the one FAPI and most hardening profiles mandate
+
+Entra's workload identity uses the `§2.2` wire format — `client_assertion_type=...jwt-bearer `— but it is not `private_key_jwt` in the OIDC sense, because:
+
+- `iss ≠ sub ≠ client_id` (it's the cluster URL, and system:serviceaccount:...)
+- the signing key belongs to a third party, not the client
+
+
+AWS SDK for Java v2 — DefaultCredentialsProvider:
+- Java system properties (aws.accessKeyId)
+- Environment variables (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)
+- Web identity token (AWS_WEB_IDENTITY_TOKEN_FILE) ← IRSA lands here
+- Profile file (~/.aws/credentials)
+- Container credentials (ECS, EKS Pod Identity)
+- EC2 instance metadata (the node's instance role)
+
+Azure — DefaultAzureCredential:
+- EnvironmentCredential (AZURE_CLIENT_SECRET)
+- WorkloadIdentityCredential ← the projected token lands here
+- ManagedIdentityCredential
+- Azure CLI / PowerShell credentials
+
+```sh
+kubelet ↔ Kubernetes API server
+                   (at Pod startup, then repeats hourly)
+
+   kubelet ──"token for SA payment-sa, aud=api://AzureADTokenExchange"──► K8s API server
+           ◄────────────────── signed JWT ──────────────────────────────
+
+   kubelet writes it to:  /var/run/secrets/azure/tokens/azure-identity-token
+
+                                   │
+                          ═══ a file on tmpfs ═══
+                                   
+```
+```
+kubelet ──"token for SA payment-sa, aud=<AUDIENCE>"──► K8s API server
+           ◄──────────────── signed JWT ─────────────────
+
+   kubelet writes it to: <TOKEN PATH>          (tmpfs, rotated at 80% TTL)
+```   
+Only the two placeholders change:
+
+| Provider | `<AUDIENCE>` | `<TOKEN PATH>` |
+| --- | --- | --- |
+| AWS (IRSA) | `sts.amazonaws.com` | `/var/run/secrets/eks.amazonaws.com/serviceaccount/token` |
+| Azure | `api://AzureADTokenExchange` | `/var/run/secrets/azure/tokens/azure-identity-token` |
+| GCP (WIF) | `//iam.googleapis.com/projects/<NUM>/locations/global/`<br>`workloadIdentityPools/<POOL>/providers/<PROV>` | you choose, e.g.<br>`/var/run/secrets/tokens/gcp-ksa/token` |
+
+```sh
+
+                                   │
+                          ═══ a file on tmpfs ═══
+                                   │
+```								   
+
+```sh
+   your app reads the file
+   your app ── POST https://sts.amazonaws.com/ ─────────────► AWS STS
+                 Action=AssumeRoleWithWebIdentity
+                 RoleArn=arn:aws:iam::123456789012:role/payment
+                 WebIdentityToken=<JWT>
+
+           ◄── AccessKeyId + SecretAccessKey + SessionToken ──   (~1h)
+
+   your app ── SigV4-signed request ───────────────────────► S3
+```
+
+```sh
+   your app reads the file
+   your app ── POST login.microsoftonline.com/<tenant>/oauth2/v2.0/token ──► Entra ID
+                 grant_type=client_credentials
+                 client_id=<app guid>
+                 scope=https://vault.azure.net/.default
+                 client_assertion_type=...jwt-bearer
+                 client_assertion=<JWT>
+
+           ◄────────────── access_token (bearer, ~1h) ──────────────
+
+   your app ── Authorization: Bearer <token> ──────────────────────► Key Vault
+```
+
+```sh
+## GCP- two round trips
+   your app reads the file
+   your app ── POST https://sts.googleapis.com/v1/token ──────────► Google STS
+                 grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+                 subject_token_type=urn:ietf:params:oauth:token-type:jwt
+                 subject_token=<JWT>
+                 audience=//iam.googleapis.com/projects/.../providers/...
+
+           ◄──────────── federated access token ─────────────
+
+   your app ── POST iamcredentials.googleapis.com/.../<GSA>:generateAccessToken ──►
+                 Authorization: Bearer <federated token>          IAM Credentials
+           ◄──────────── GSA access token ───────────────────
+
+   your app ── Authorization: Bearer <token> ─────────────────────► Cloud Storage
+```
+GCP normally needs a second hop to impersonate a Google service account. AWS and Azure are one exchange.
+
+EKS Pod Identity — no JWT is projected for your app at all:
+```sh
+   your app ── GET http://169.254.170.23/v1/credentials ──► Pod Identity Agent
+           ◄──── AWS credentials ────                        (node DaemonSet)
+                                                                    │
+                                        the agent calls AWS ────────┘
+```										
+Workload Identity Federation for GKE — same shape:
+```sh
+   your app ── GET http://169.254.169.254/... ──► gke-metadata-server
+           ◄──── access token ────                 (node DaemonSet)
+                                                          │
+                                  the DaemonSet calls Google ─┘
+```								  
+
+Resolving the environment — WebIdentityTokenFileCredentialsProvider:
+
+```java
+webIdentityTokenFile =
+    builder.webIdentityTokenFile != null ? builder.webIdentityTokenFile
+                                         : Paths.get(trim(SdkSystemSetting.AWS_WEB_IDENTITY_TOKEN_FILE
+                                                              .getStringValueOrThrow()));
+
+roleArn = builder.roleArn != null ? builder.roleArn
+                                  : trim(SdkSystemSetting.AWS_ROLE_ARN.getStringValueOrThrow());
+```								  
+
+Reading the file — AssumeRoleWithWebIdentityRequestSupplier:
+```java
+public AssumeRoleWithWebIdentityRequest get() {
+    return request.toBuilder()
+        .webIdentityToken(getToken(webIdentityTokenFile))
+        .build();
+}
+
+private String getToken(Path file) {
+    try (InputStream webIdentityTokenStream = Files.newInputStream(file)) {
+        return IoUtils.toUtf8String(webIdentityTokenStream);
+    } catch (IOException e) {
+        throw new UncheckedIOException(e);
+    }
+}
+```
+
+WorkloadIdentityCredential:
+
+```java
+String federatedTokenFilePathInput = CoreUtils.isNullOrEmpty(federatedTokenFilePath)
+    ? configuration.get(AZURE_FEDERATED_TOKEN_FILE)
+    : federatedTokenFilePath;
+
+byte[] bytes = Files.readAllBytes(Paths.get(filePath));
+return new String(bytes, StandardCharsets.UTF_8).trim();
+```
+The important line — the assertion is a Supplier, not a String:
+```java
+ClientAssertionCredential credential = new ClientAssertionCredential(clientId,
+    tenantId, () -> readFederatedTokenFromFile(federatedTokenFilePath),
+    identityClientOptions);
+```	
+```java
+TokenCredential credential = new WorkloadIdentityCredentialBuilder().build();
+
+SecretClient client = new SecretClientBuilder()
+    .vaultUrl("https://myvault.vault.azure.net")
+    .credential(credential)
+    .buildClient();
+```
+
+FileIdentityPoolSubjectTokenSupplier:
+
+```java
+public String getSubjectToken(ExternalAccountSupplierContext context) throws IOException {
+    String credentialFilePath = this.credentialSource.getCredentialLocation();
+    if (!Files.exists(Paths.get(credentialFilePath), LinkOption.NOFOLLOW_LINKS)) {
+      throw new IOException(
+          String.format(
+              "Invalid credential location. The file at %s does not exist.", credentialFilePath));
+    }
+    try {
+      return parseToken(
+          Files.newInputStream(new File(credentialFilePath).toPath()), this.credentialSource);
+	}
+}
+```
+
+```sh
+User auth:      Keycloak/Entra ──token──► kube-apiserver     (k8s is the client)
+Workload ID:    kube-apiserver ──token──► Entra/AWS/GCP      (k8s is the issuer)
+```
+
+| Who receives the token | Protocol used |
+| --- | --- |
+| kube-apiserver (pod → API server) | plain bearer token in `Authorization:` — not OAuth |
+| Entra ID | RFC 7523 §2.2 |
+| Google STS | RFC 8693 |
+| AWS STS | proprietary `AssumeRoleWithWebIdentity` |
+| HashiCorp Vault | Vault's own auth API |
+
+
+### Proof the SDK isn't doing anything magic
+You can run this inside the Pod, no SDK involved:
+
+```curl
+curl -s -X POST \
+  "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
+  -d "grant_type=client_credentials" \
+  -d "client_id=${AZURE_CLIENT_ID}" \
+  -d "scope=https://vault.azure.net/.default" \
+  -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+  -d "client_assertion=$(cat ${AZURE_FEDERATED_TOKEN_FILE})"
+  ```
+
+
+AES-GCM is an authenticated encryption scheme. In addition to encrypting plaintext to produce ciphertext, it computes an authentication tag over the ciphertext and any additional data for which authentication is required (additionally authenticated data, or AAD). The authentication tag helps ensure that the data is from the purported source and that the ciphertext and AAD have not been modified.
+
+A key derivation function is used to derive additional keys from an initial secret or key. AWS KMS uses an key derivation function (KDF) to derive per-call keys for every encryption under an AWS KMS key. All KDF operations use the KDF in counter mode using HMAC [FIPS197] with SHA256 [FIPS180]. The 256-bit derived key is used with AES-GCM to encrypt or decrypt customer data and keys
+
+### Envelope encryption
+
+When you encrypt your data, your data is protected, but you have to protect your encryption key. One strategy is to encrypt it. Envelope encryption is the practice of encrypting plaintext data with a data key, and then encrypting the data key under another key.
+
+You can even encrypt the data encryption key under another encryption key, and encrypt that encryption key under another encryption key. But, eventually, one key must remain in plaintext so you can decrypt the keys and your data. This top-level plaintext key encryption key is known as the root key.
+
+![alt text](image-5.png)

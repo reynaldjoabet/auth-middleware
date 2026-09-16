@@ -1,6 +1,6 @@
 import Dependencies._
 
-scalaVersion := "3.8.4"
+scalaVersion := "3.9.0"
 version      := "0.1.0-SNAPSHOT"
 
 ThisBuild / scalacOptions := Seq(
@@ -57,8 +57,8 @@ lazy val root = (project in file("."))
       Dependencies.postgres       % Runtime,
       Dependencies.logback        % Runtime,
       otelJava,
-      "io.opentelemetry" % "opentelemetry-exporter-otlp"               % "1.65.0" % Runtime,
-      "io.opentelemetry" % "opentelemetry-sdk-extension-autoconfigure" % "1.65.0" % Runtime,
+      "io.opentelemetry" % "opentelemetry-exporter-otlp"               % "1.66.0" % Runtime,
+      "io.opentelemetry" % "opentelemetry-sdk-extension-autoconfigure" % "1.66.0" % Runtime,
       Dependencies.sageClientCe,
       Dependencies.sageClientZio,
       guice,

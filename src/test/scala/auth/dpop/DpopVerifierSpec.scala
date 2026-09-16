@@ -105,7 +105,7 @@ class DpopVerifierSpec extends DpopBaseSuite {
   test("rejects a stale proof") {
     val token = sign(dpopBoundClaims())
     val proof =
-      dpopProof("GET", accountsUri.renderString, token, iatOffset = -10.minutes)
+      dpopProof("GET", accountsUri.renderString, token, iatOffset = (-10).minutes)
     app().use(_.run(dpopRequest(token, proof)).flatMap(assertDpopRejected))
   }
 

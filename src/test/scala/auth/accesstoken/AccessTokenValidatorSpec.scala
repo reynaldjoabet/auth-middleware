@@ -113,13 +113,13 @@ class AccessTokenValidatorSpec extends CatsEffectSuite {
   }
 
   test("rejects an expired token") {
-    validator().validate(sign(claims(expiresIn = -10.minutes))).map { result =>
+    validator().validate(sign(claims(expiresIn = (-10).minutes))).map { result =>
       assertEquals(result, Left(AuthError.InvalidToken.Rejected))
     }
   }
 
   test("accepts a token expired within the clock-skew window") {
-    validator().validate(sign(claims(expiresIn = -10.seconds))).map { result =>
+    validator().validate(sign(claims(expiresIn = (-10).seconds))).map { result =>
       assert(result.isRight, result.toString)
     }
   }

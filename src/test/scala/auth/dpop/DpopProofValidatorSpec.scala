@@ -97,7 +97,7 @@ class DpopProofValidatorSpec extends CatsEffectSuite {
   }
 
   test("rejects an expired proof (iat older than proofMaxAge + skew)") {
-    val proof = dpopProof("GET", htu, accessToken, iatOffset = -10.minutes)
+    val proof = dpopProof("GET", htu, accessToken, iatOffset = (-10).minutes)
     validator.validate(proof).map { result =>
       assertEquals(result, Left(AuthError.InvalidDpopProof.Rejected))
     }

@@ -14,7 +14,7 @@ object Dependencies {
     val zioKafka   = "3.6.0"
 
     // --- HTTP ---
-    val http4s = "0.23.36"
+    val http4s = "0.23.37"
     val sttp4  = "4.0.25"
     val tapir  = "1.13.18"
 
@@ -24,13 +24,13 @@ object Dependencies {
 
     // --- FP ---
     val catsEffect      = "3.7.1"
-    val fs2             = "3.13.0"
-    val fs2Kafka        = "4.0.0"
+    val fs2             = "3.14.0"
+    val fs2Kafka        = "4.1.0"
     val chimney         = "1.10.0"
     val iron            = "3.3.2"
     val hedgehog        = "0.13.0"
     val scalacheck      = "1.19.0"
-    val munit           = "1.3.5"
+    val munit           = "1.3.6"
     val munitCatsEffect = "2.2.0"
 
     // --- DB ---
@@ -38,7 +38,7 @@ object Dependencies {
     val magnum   = "2.0.0-M3"
     val skunk    = "1.1.0-RC1"
     val hikaricp = "7.1.0"
-    val flyway   = "13.4.0"
+    val flyway   = "13.7.0"
     val postgres = "42.7.13"
 
     // --- Security ---
@@ -52,7 +52,7 @@ object Dependencies {
 
     // --- Logging ---
     val scribe  = "3.19.0"
-    val slf4j   = "2.0.18"
+    val slf4j   = "2.0.19"
     val logback = "1.6.3"
 
     // --- Cache ---
@@ -263,10 +263,10 @@ object Dependencies {
 
   // Redis/Valkey client (Sage) — recovered after the Dependencies.scala wipe.
   lazy val sageClientCe =
-    "com.github.ghostdogpr" %% "sage-client-ce" % "0.3.1"
+    "com.github.ghostdogpr" %% "sage-client-ce" % "0.4.0"
 
   lazy val sageClientZio =
-    "com.github.ghostdogpr" %% "sage-client-zio" % "0.3.1"
+    "com.github.ghostdogpr" %% "sage-client-zio" % "0.4.0"
 
   // Logging
   lazy val scribe = "com.outr" %% "scribe" % Version.scribe

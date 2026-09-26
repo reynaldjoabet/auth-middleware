@@ -11,7 +11,7 @@ object Dependencies {
     val zioLogging = "2.5.3"
     val zioConfig  = "4.0.7"
     val zioSchema  = "1.8.5"
-    val zioKafka   = "3.6.0"
+    val zioKafka   = "3.8.0"
 
     // --- HTTP ---
     val http4s = "0.23.37"
@@ -26,17 +26,17 @@ object Dependencies {
     val catsEffect      = "3.7.1"
     val fs2             = "3.14.0"
     val fs2Kafka        = "4.1.1"
-    val chimney         = "1.10.0"
+    val chimney         = "2.0.0"
     val iron            = "3.3.2"
     val hedgehog        = "0.13.0"
-    val scalacheck      = "1.19.0"
+    val scalacheck      = "1.20.0"
     val munit           = "1.3.6"
     val munitCatsEffect = "2.2.1"
 
     // --- DB ---
     val quill    = "4.8.6"
     val magnum   = "2.0.0-M3"
-    val skunk    = "1.1.0-RC1"
+    val skunk    = "2.0.0-RC3"
     val hikaricp = "7.1.0"
     val flyway   = "13.8.0"
     val postgres = "42.7.13"

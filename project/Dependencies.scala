@@ -45,7 +45,7 @@ object Dependencies {
     val jwtScala         = "11.0.4"
     val bouncycastle     = "1.84"
     val password4j       = "1.8.4"
-    val auth0            = "4.5.2"
+    val auth0            = "4.6.1"
     val nimbusJoseJwt    = "10.10"
     val nimbusOauth2Oidc = "11.38.2"
     val vault            = "5.1.0"

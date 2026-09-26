@@ -7,7 +7,7 @@ object Dependencies {
     // --- ZIO ecosystem ---
     val zio        = "2.1.26"
     val zioJson    = "0.9.2"
-    val zioHttp    = "3.11.2"
+    val zioHttp    = "3.11.6"
     val zioLogging = "2.5.3"
     val zioConfig  = "4.0.7"
     val zioSchema  = "1.8.5"

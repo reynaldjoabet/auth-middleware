@@ -59,7 +59,7 @@ object Dependencies {
     val caffeine = "3.3.0"
 
     // --- Observability ---
-    val datadog = "2.35.0"
+    val datadog = "2.60.0"
     val kamon   = "2.7.7"
     val otel4s  = "1.1.0"
 

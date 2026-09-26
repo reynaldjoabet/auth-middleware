@@ -68,7 +68,7 @@ object Dependencies {
 
     // --- Cloud ---
     val awsV2         = "2.26.15"
-    val azureIdentity = "1.17.0"
+    val azureIdentity = "1.18.6"
     val azureKv       = "4.9.4"
 
   }

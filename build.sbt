@@ -10,15 +10,15 @@ ThisBuild / scalacOptions := Seq(
   "-deprecation",
   "-feature",
   "-unchecked",
-  // "-Werror",
   "-java-output-version:21",
+  "-Werror",
+  "-Wunused:all",
   "-Wvalue-discard",
+  "-Wnonunit-statement",
   "-language:strictEquality",
-  // "-Wnonunit-statement",
   "-Xcheck-macros",
   "-Xmax-inlines:64",
-  "-Yfuture-lazy-vals",
-  "-Ysafe-init"
+  "-Wsafe-init"
 )
 
 Global / onChangedBuildSource := ReloadOnSourceChanges

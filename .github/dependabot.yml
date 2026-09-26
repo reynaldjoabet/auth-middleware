@@ -1,15 +1,57 @@
+# One PR per ecosystem per week, not one per dependency.
+#
+# sbt and GitHub Actions are grouped separately so a breaking action bump
+# cannot block library updates, and vice versa. Security updates always run as
+# a separate flow from version updates - that is Dependabot's behaviour, not a
+# choice here - so the security groups exist to bundle all fixes into a single
+# PR rather than one per advisory.
 version: 2
-updates:
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
-    commit-message:
-      prefix: ci
 
+updates:
   - package-ecosystem: sbt
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 1
+    labels:
+      - dependencies
     commit-message:
       prefix: build(deps)
+    groups:
+      sbt-all:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types:
+          - major
+          - minor
+          - patch
+      sbt-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 1
+    labels:
+      - dependencies
+    commit-message:
+      prefix: ci
+    groups:
+      actions-all:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types:
+          - major
+          - minor
+          - patch
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]

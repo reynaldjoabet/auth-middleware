@@ -35,5 +35,5 @@ metals.sbt
 /.scala-build
 .claude/
 .mcp.json
-# semanticdb output written beside the build definition
+# semanticdb output anywhere in the tree, e.g. build.sbt.semanticdb at the root
 *.semanticdb

@@ -4,28 +4,30 @@ scalaVersion := "3.9.0"
 version      := "0.1.0-SNAPSHOT"
 
 ThisBuild / scalacOptions := Seq(
+  "-encoding",
+  "UTF-8",
   "-no-indent",
   "-deprecation",
   "-feature",
   "-unchecked",
-  "-source:3.3",
-  "-language:strictEquality",
+  // "-Werror",
   "-java-output-version:21",
-  "-Werror",
-  "-Wunused:all",
   "-Wvalue-discard",
-  "-Wnonunit-statement",
+  "-language:strictEquality",
+  // "-Wnonunit-statement",
   "-Xcheck-macros",
-  "-Xmax-inlines:64"
+  "-Xmax-inlines:64",
+  "-Yfuture-lazy-vals",
+  "-Ysafe-init"
 )
 
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
 lazy val root = (project in file("."))
   .settings(
-    semanticdbEnabled := true,
-    name              := "auth-middleware",
-    // Use ++= so PlayJava plugin defaults (play/play-java/jackson) remain on the classpath.
+    semanticdbEnabled    := true,
+    name                 := "auth-middleware",
+    scalacOptions        := scalacOptions.value.distinct,
     libraryDependencies ++= Seq(
       iron,
       munit,

@@ -19,26 +19,26 @@ object Dependencies {
     val tapir  = "1.13.18"
 
     // --- JSON ---
-    val jsoniter = "2.40.1"
+    val jsoniter = "2.41.2"
     val circe    = "0.14.16"
 
     // --- FP ---
     val catsEffect      = "3.7.1"
     val fs2             = "3.14.0"
-    val fs2Kafka        = "4.1.0"
+    val fs2Kafka        = "4.1.1"
     val chimney         = "1.10.0"
     val iron            = "3.3.2"
     val hedgehog        = "0.13.0"
     val scalacheck      = "1.19.0"
     val munit           = "1.3.6"
-    val munitCatsEffect = "2.2.0"
+    val munitCatsEffect = "2.2.1"
 
     // --- DB ---
     val quill    = "4.8.6"
     val magnum   = "2.0.0-M3"
     val skunk    = "1.1.0-RC1"
     val hikaricp = "7.1.0"
-    val flyway   = "13.7.0"
+    val flyway   = "13.8.0"
     val postgres = "42.7.13"
 
     // --- Security ---
@@ -46,17 +46,17 @@ object Dependencies {
     val bouncycastle     = "1.84"
     val password4j       = "1.8.4"
     val auth0            = "4.5.2"
-    val nimbusJoseJwt    = "10.9.1"
+    val nimbusJoseJwt    = "10.10"
     val nimbusOauth2Oidc = "11.38.2"
     val vault            = "5.1.0"
 
     // --- Logging ---
     val scribe  = "3.19.0"
-    val slf4j   = "2.0.19"
-    val logback = "1.6.3"
+    val slf4j   = "2.0.20"
+    val logback = "1.6.4"
 
     // --- Cache ---
-    val caffeine = "3.2.4"
+    val caffeine = "3.3.0"
 
     // --- Observability ---
     val datadog = "2.35.0"
@@ -262,6 +262,8 @@ object Dependencies {
   lazy val otelJava = "org.typelevel" %% "otel4s-oteljava" % Version.otel4s
 
   // Redis/Valkey client (Sage) — recovered after the Dependencies.scala wipe.
+  // 0.4.0 is built with Scala 3.9.0 and requires scala3-library_3 3.9.0, so it
+  // pins the build to 3.9.0+. Re-adding a 3.3.x LTS leg means reverting to 0.3.1.
   lazy val sageClientCe =
     "com.github.ghostdogpr" %% "sage-client-ce" % "0.4.0"
 

@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Nightly run catches breakage from outside the repo - upstream releases,
+  # runner image changes - on days with no commits. Drop if not wanted.
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,19 +18,58 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Give the compiler room for the Iron/jsoniter macro expansions.
+  SBT_OPTS: -Xmx4g -XX:ReservedCodeCacheSize=512m
+
 jobs:
+  # Formatting is independent of Scala and JDK version, so it runs once here
+  # rather than being repeated in every matrix leg.
+  lint:
+    name: Formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: 'sbt'
+          cache-dependency-path: |
+            **/*.sbt
+            **/project/build.properties
+            **/project/*.scala
+            **/project/**/*.scala
+
+      - name: Set up sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Check formatting
+        run: sbt -v "scalafmtSbtCheck; scalafmtCheckAll"
+
   build:
-    name: Scala ${{ matrix.scala }} / Java ${{ matrix.java }} (${{ matrix.distribution }}) on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Scala ${{ matrix.scala }} / Java ${{ matrix.java }} (${{ matrix.distribution }})
+    # Gate on formatting so a misformatted PR fails in one cheap job rather
+    # than burning every matrix leg.
+    needs: lint
+    runs-on: ubuntu-latest
     timeout-minutes: 30
 
     strategy:
       fail-fast: false
       matrix:
-        java: [21,25]
-        distribution: [temurin, corretto]
+        # sage-client 0.4.0 requires scala3-library 3.9.0, which sets the floor
+        # for this build. A 3.3.x LTS leg would need sage 0.3.1 and Play 3.0.x.
         scala: ['3.9.0']
-        os: [ubuntu-latest]
+        # -java-output-version:21 makes 21 the minimum supported runtime; 25 is
+        # verified so the service can run on either.
+        java: ['21', '25']
+
+        distribution: [temurin, corretto]
 
     steps:
       - name: Checkout repository
@@ -47,8 +91,5 @@ jobs:
       - name: Set up sbt
         uses: sbt/setup-sbt@v1
 
-      - name: Check formatting
-        run: sbt -v --server "scalafmtSbtCheck; scalafmtCheckAll"
-      
       - name: Compile and test
-        run: sbt -v --server "++${{ matrix.scala }}" "Test/compile; test"
+        run: sbt -v "++${{ matrix.scala }}" "Test/compile; test"

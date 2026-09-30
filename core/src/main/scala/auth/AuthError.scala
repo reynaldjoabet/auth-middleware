@@ -5,7 +5,7 @@ package auth
   *
   * The `reason` strings carried here are fixed, library-controlled values: they are safe to return
   * to clients in `error_description` and never contain token material, claim values or upstream
-  * exception messages. Internal diagnostic detail is routed separately through [[AuthEvents]] so it
+  * exception messages. Internal diagnostic detail is routed separately through `AuthEvents` so it
   * reaches logs and metrics but never the HTTP response.
   */
 enum AuthError derives CanEqual {
@@ -137,7 +137,7 @@ object AuthError {
       )
 
     /**
-      * [[SenderConstraintPolicy.Required]] (FAPI 2.0): plain bearer tokens are not accepted.
+      * `SenderConstraintPolicy.Required` (FAPI 2.0): plain bearer tokens are not accepted.
       */
     val SenderConstraintRequired: AuthError.InvalidToken =
       AuthError.InvalidToken(

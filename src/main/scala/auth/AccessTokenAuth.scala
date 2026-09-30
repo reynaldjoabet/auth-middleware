@@ -5,22 +5,12 @@ import cats.data.{EitherT, Kleisli, OptionT}
 import cats.effect.Clock
 import cats.syntax.all.*
 
-import org.http4s.{
-  AuthScheme,
-  AuthedRoutes,
-  Credentials,
-  Header,
-  MediaType,
-  Request,
-  Response,
-  Status
-}
+import org.http4s.{AuthedRoutes, Header, MediaType, Request, Response, Status}
 import org.http4s.headers.{`Content-Type`, Authorization}
 import org.http4s.server.AuthMiddleware
 import org.typelevel.ci.*
 import auth.accesstoken.AccessTokenValidator
 import auth.dpop.DpopVerifier
-import auth.given
 import auth.mtls.{ClientCertificates, Mtls}
 
 /**
@@ -58,14 +48,8 @@ import auth.mtls.{ClientCertificates, Mtls}
   */
 object AccessTokenAuth {
 
-  private val DpopScheme: AuthScheme = ci"DPoP"
-
-  private enum TokenScheme derives CanEqual {
-
-    case Bearer
-    case Dpop
-
-  }
+  private type TokenScheme = CredentialExtraction.Scheme
+  private val TokenScheme = CredentialExtraction.Scheme
 
   /**
     * @param senderConstraint
@@ -247,78 +231,19 @@ object AccessTokenAuth {
   private val DpopNonceHeader = ci"DPoP-Nonce"
 
   private def usesDpopScheme[F[_]](req: Request[F]): Boolean =
-    tokenCredentials(req).flatten.exists(_._1 == DpopScheme)
+    tokenCredentials(req).flatten.exists(_._1.equalsIgnoreCase("DPoP"))
 
   /**
-    * The request's `Authorization` credentials as `(scheme, token68)`.
-    *
-    *   - `None`: no usable header (absent, or unparseable — as http4s's typed lookup treats it)
-    *   - `Some(None)`: a parseable header that is not a token68 credential (auth-params form)
-    *   - `Some(Some((scheme, token)))`: a token68 credential
-    *
-    * Every authenticated request reads this, and http4s's typed lookup runs a parser-combinator
-    * grammar each time — a measurable share of CPU under load. The well-formed case, `<scheme> SP
-    * <token68>`, is recognised by a direct character scan; anything else falls through to the typed
-    * parser, so unusual input behaves exactly as before.
+    * The request's `Authorization` credentials as `(scheme, token68)` — see
+    * [[CredentialExtraction.tokenCredentialsOf]].
     */
   private[auth] def tokenCredentials[F[_]](
       req: Request[F]
-  ): Option[Option[(CIString, String)]] =
-    req.headers.get(Authorization.name).map(_.head.value).flatMap { raw =>
-      fastTokenCredentials(raw) match {
-        case found @ Some(_) => Some(found)
-        case None            =>
-          req.headers.get[Authorization].map {
-            case Authorization(Credentials.Token(scheme, token)) => Some((scheme, token))
-            case _                                               => None
-          }
-      }
-    }
-
-  /**
-    * `auth-scheme SP token68`, or `None` when `raw` is not exactly that shape. One space, not the
-    * `1*SP` RFC 9110 §11.4 allows: http4s's parser takes exactly one, and this must agree with it —
-    * other shapes fall through to that parser.
-    */
-  private[auth] def fastTokenCredentials(raw: String): Option[(CIString, String)] = {
-    val space = raw.indexOf(' ')
-    if (space <= 0) None
-    else {
-      val scheme = raw.substring(0, space)
-      val token  = raw.substring(space + 1)
-      if (isToken(scheme) && isToken68(token)) Some((CIString(scheme), token)) else None
-    }
-  }
-
-  // tchar (RFC 9110 §5.6.2)
-  private def isToken(s: String): Boolean = {
-    var i = 0
-    while (i < s.length) {
-      val c  = s.charAt(i)
-      val ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-        "!#$%&'*+-.^_`|~".indexOf(c.toInt) >= 0
-      if (!ok) return false
-      i += 1
-    }
-    s.nonEmpty
-  }
-
-  // token68 = 1*( ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" / "/" ) *"=" (RFC 9110 §11.2)
-  private def isToken68(s: String): Boolean = {
-    var i = 0
-    while (
-      i < s.length && {
-        val c = s.charAt(i)
-        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-        c == '-' || c == '.' || c == '_' || c == '~' || c == '+' || c == '/'
-      }
-    ) i += 1
-    if (i == 0) false
-    else {
-      while (i < s.length && s.charAt(i) == '=') i += 1
-      i == s.length
-    }
-  }
+  ): Option[Option[(String, String)]] =
+    req.headers
+      .get(Authorization.name)
+      .map(_.head.value)
+      .flatMap(CredentialExtraction.tokenCredentialsOf)
 
   /**
     * Require every scope in `required` on top of authentication. Compose per route group, e.g.
@@ -456,116 +381,24 @@ object AccessTokenAuth {
       req: Request[F],
       dpopEnabled: Boolean
   ): Either[AuthError, (TokenScheme, String)] =
-    // OAuth 2.1 / RFC 6750 §2.3: query-string tokens leak via logs, referrers and
-    // history; reject them even when an Authorization header is also present.
-    if (req.uri.query.pairs.exists(_._1 == "access_token"))
-      Left(AuthError.InvalidRequest.TokenInQuery)
-    else if (req.headers.headers.count(_.name == Authorization.name) > 1)
-      Left(AuthError.InvalidRequest.MultipleCredentials)
-    else
-      tokenCredentials(req) match {
-        case Some(Some((AuthScheme.Bearer, token))) =>
-          Right((TokenScheme.Bearer, token))
-        case Some(Some((DpopScheme, token))) if dpopEnabled =>
-          Right((TokenScheme.Dpop, token))
-        case Some(_) =>
-          Left(AuthError.InvalidToken.WrongScheme)
-        case None =>
-          Left(AuthError.MissingToken)
-      }
+    CredentialExtraction.extract(
+      tokenInQuery = req.uri.query.pairs.exists(_._1 == "access_token"),
+      authorization = req.headers.get(Authorization.name).fold(Nil)(_.toList.map(_.value)),
+      dpopEnabled = dpopEnabled
+    )
 
   private[auth] def errorResponse[F[_]](
       error: AuthError,
       realm: String,
       dpopAlgs: Option[String]
   ): Response[F] = {
-    def bearer(params: String): String               = s"""Bearer realm="$realm"$params"""
-    def withDpopChallenge(challenge: String): String =
-      (challenge :: dpopAlgs.map(a => s"""DPoP algs="$a"""").toList)
-        .mkString(", ")
-    val algsParam = dpopAlgs.fold("")(a => s""", algs="$a"""")
-
-    error match {
-      case AuthError.MissingToken =>
-        challengeResponse(
-          Status.Unauthorized,
-          withDpopChallenge(bearer("")),
-          body = None
-        )
-      case AuthError.InvalidRequest(reason) =>
-        challengeResponse(
-          Status.BadRequest,
-          bearer(s""", error="invalid_request", error_description="$reason""""),
-          body = Some(("invalid_request", reason))
-        )
-      case AuthError.InvalidToken(reason) =>
-        challengeResponse(
-          Status.Unauthorized,
-          withDpopChallenge(
-            bearer(s""", error="invalid_token", error_description="$reason"""")
-          ),
-          body = Some(("invalid_token", reason))
-        )
-      case AuthError.InvalidDpopProof(reason) =>
-        challengeResponse(
-          Status.Unauthorized,
-          s"""DPoP realm="$realm"$algsParam, error="invalid_dpop_proof", error_description="$reason"""",
-          body = Some(("invalid_dpop_proof", reason))
-        )
-      case AuthError.UseDpopNonce(nonce) =>
-        // RFC 9449 §8-9: hand the client a fresh DPoP-Nonce to echo in the
-        // `nonce` claim of its next proof. Not a hard failure — a challenge.
-        val description =
-          "a DPoP proof carrying a server-provided nonce is required"
-        challengeResponse(
-          Status.Unauthorized,
-          s"""DPoP realm="$realm"$algsParam, error="use_dpop_nonce", error_description="$description"""",
-          body = Some(("use_dpop_nonce", description))
-        ).putHeaders(Header.Raw(DpopNonceHeader, nonce.value: String))
-      case AuthError.InsufficientScope(required) =>
-        val scope = required.toSeq.sorted.mkString(" ")
-        challengeResponse(
-          Status.Forbidden,
-          bearer(s""", error="insufficient_scope", scope="$scope""""),
-          body = Some(("insufficient_scope", s"required scope: $scope"))
-        )
-      case AuthError.InsufficientUserAuthentication(acrValues, maxAge) =>
-        val description =
-          "stronger or more recent user authentication is required"
-        // Emit acr_values in the caller's preference order (RFC 9470 §3); do
-        // not sort. max_age is a MaxAuthAge, so non-negativity (RFC 9470 §3) is
-        // guaranteed by the type — no runtime clamp needed.
-        val acrParam =
-          if (acrValues.isEmpty) ""
-          else s""", acr_values="${acrValues.mkString(" ")}""""
-        val maxAgeParam =
-          maxAge.fold("")(m => s", max_age=${m.value}")
-        challengeResponse(
-          Status.Unauthorized,
-          bearer(
-            s""", error="insufficient_user_authentication", error_description="$description"$acrParam$maxAgeParam"""
-          ),
-          body = Some(("insufficient_user_authentication", description))
-        )
-      case AuthError.ValidationUnavailable =>
-        Response[F](Status.ServiceUnavailable)
-          .putHeaders(Header.Raw(ci"Retry-After", "5"), noStore)
-    }
-  }
-
-  private def noStore: Header.Raw = Header.Raw(ci"Cache-Control", "no-store")
-
-  private def challengeResponse[F[_]](
-      status: Status,
-      challenge: String,
-      body: Option[(String, String)]
-  ): Response[F] = {
-    val base = Response[F](status)
-      .putHeaders(Header.Raw(ci"WWW-Authenticate", challenge), noStore)
-    body.fold(base) { case (code, description) =>
-      base
-        .withEntity(s"""{"error":"$code","error_description":"$description"}""")
-        .withContentType(`Content-Type`(MediaType.application.json))
+    val challenge = AuthChallenge.of(error, realm, dpopAlgs)
+    val base      = Response[F](Status.fromInt(challenge.status).getOrElse(Status.InternalServerError))
+      .putHeaders(challenge.headers.map { case (name, value) =>
+        Header.Raw(CIString(name), value)
+      }*)
+    challenge.jsonBody.fold(base) { json =>
+      base.withEntity(json).withContentType(`Content-Type`(MediaType.application.json))
     }
   }
 

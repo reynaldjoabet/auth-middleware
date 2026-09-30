@@ -10,12 +10,12 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
 /**
   * Configuration for validating OAuth 2.0 access tokens (RFC 9068 profile).
   *
-  * Used by [[AccessTokenValidator.default]] and [[AccessTokenValidator.withKeySource]] to enforce
+  * Used by `AccessTokenValidator.default` and `AccessTokenValidator.withKeySource` to enforce
   * access token required claims, issuer, audience, and lifetime checks.
   *
-  * '''Note:''' This config is for access tokens only. DPoP proofs use [[DpopConfig]] and are
-  * verified separately via [[DpopVerifier]]; the two JWT types have incompatible required claims
-  * and lifecycles.
+  * '''Note:''' This config is for access tokens only. DPoP proofs use `DpopConfig` and are verified
+  * separately via `DpopVerifier`; the two JWT types have incompatible required claims and
+  * lifecycles.
   *
   * Defaults are deliberately strict, as appropriate for a fintech API:
   *   - only asymmetric signature algorithms are accepted (no HMAC, and `alg: none` is structurally
@@ -69,9 +69,8 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
   *   a token signed by a key the issuer has just withdrawn keeps passing — already the case for
   *   `jwksCacheTtl`, so keep this at or below it.
   * @param revocationCacheTtl
-  *   how long each node reuses a denylist answer (see [[auth.revocation.TokenDenylist.cached]]);
-  *   the worst-case revocation latency it adds. `0` (the default) asks the denylist on every
-  *   request.
+  *   how long each node reuses a denylist answer (see `auth.revocation.TokenDenylist.cached`); the
+  *   worst-case revocation latency it adds. `0` (the default) asks the denylist on every request.
   * @param revocationCacheMaxEntries
   *   cap on cached denylist answers
   */

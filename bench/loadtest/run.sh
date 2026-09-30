@@ -12,6 +12,10 @@
 #   MODE=serve bench/loadtest/run.sh            # start everything, then hold
 #                                                 (for profiling; kill to stop)
 #   SERVER_OPTS="-Dcats.effect.tracing.mode=none" bench/loadtest/run.sh
+#   SERVICE=zio bench/loadtest/run.sh           # the ZIO build (module zio);
+#                                                 Bearer only, so no DPoP scenarios
+#   OTEL_SDK_DISABLED=true bench/loadtest/run.sh  # OpenTelemetry off (the ZIO
+#                                                 build has none; use for A/B)
 #
 # CONNS stays below 50 on purpose. fs2 binds the listening socket with the
 # JDK's default backlog of 50, so opening more connections than that at once
@@ -34,6 +38,8 @@ MODE=${MODE:-run}
 SERVER_OPTS=${SERVER_OPTS:-}
 TOKENS=${TOKENS:-20000}
 PROOFS=${PROOFS:-150000}
+SERVICE=${SERVICE:-http4s}
+OTEL_SDK_DISABLED=${OTEL_SDK_DISABLED:-false}
 NONCE_HARVEST=${NONCE_HARVEST:-10s}
 
 HTTP_PORT=18080
@@ -81,7 +87,7 @@ start_server() { # extra JAVA_OPTS
     DB_HOST=127.0.0.1 DB_PORT=$PG_PORT DB_NAME=auth DB_USER=auth DB_PASSWORD=unused \
     AUTH_ISSUER=$ISSUER AUTH_AUDIENCE=$AUDIENCE AUTH_JWKS_URI="https://localhost:$JWKS_PORT/jwks.json" \
     DPOP_NONCE_ENABLED=$NONCE_ENABLED DPOP_NONCE_MODE=$NONCE_MODE DPOP_NONCE_KEY=$NONCE_KEY \
-    OTEL_SERVICE_NAME=auth-middleware \
+    OTEL_SERVICE_NAME=auth-middleware OTEL_SDK_DISABLED=$OTEL_SDK_DISABLED \
     OTEL_TRACES_SAMPLER=parentbased_traceidratio OTEL_TRACES_SAMPLER_ARG=0.01 \
     OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none \
     JAVA_OPTS="-Xms2g -Xmx2g -Djavax.net.ssl.trustStore=$WORK/tls/truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit -Djavax.net.ssl.trustStoreType=PKCS12 $SERVER_OPTS ${1:-}" \
@@ -111,13 +117,18 @@ run() { # name, wrk args...
 log "work dir: $WORK"
 
 log "Building the packaged service and the token minter"
-(cd "$ROOT" && sbt --client "stage; bench/compile") | grep -E "error|success" | tail -2
+(cd "$ROOT" && sbt --client "stage; zio/stage; bench/compile") | grep -E "error|success" | tail -2
 
 # `stage` writes to target/out/jvm/scala-*/auth-middleware/universal/stage on
 # sbt 2 and target/universal/stage on sbt 1. Take the newest, so a stale tree
 # from the other layout can never be the one under test.
-STAGE_BIN=$(ls -t "$ROOT"/target/out/jvm/scala-*/auth-middleware/universal/stage/bin/auth-middleware \
-  "$ROOT"/target/universal/stage/bin/auth-middleware 2>/dev/null | head -1)
+case "$SERVICE" in
+  http4s) APP=auth-middleware MODULE_DIR="" ;;
+  zio) APP=auth-middleware-zio MODULE_DIR=zio/ ;;
+  *) echo "SERVICE must be http4s or zio" >&2; exit 1 ;;
+esac
+STAGE_BIN=$(ls -t "$ROOT"/target/out/jvm/scala-*/"$APP"/universal/stage/bin/"$APP" \
+  "$ROOT/${MODULE_DIR}target/universal/stage/bin/$APP" 2>/dev/null | head -1 || true)
 [[ -x "$STAGE_BIN" ]] || { echo "no staged service found; run: sbt --client stage" >&2; exit 1; }
 log "Service under test: $STAGE_BIN"
 
@@ -185,6 +196,7 @@ restart_with_nonces() { # enabled mode
   start_server
 }
 
+if [[ "$SERVICE" == "http4s" ]]; then
 log "Minting $PROOFS single-use DPoP proofs (valid for 60 s)"
 mint 0 "$PROOFS"
 dpop_run "4a. DPoP, no server nonce (ES256 verify + Redis SET NX on the jti)"
@@ -212,6 +224,7 @@ mint 0 "$((HARVESTED < PROOFS ? HARVESTED : PROOFS))" "$WORK/nonces.txt"
 dpop_run "4c. DPoP, Redis single-use nonce (Redis DEL + SET per request, in-memory jti)"
 
 restart_with_nonces false stateless
+fi
 
 log "Restarting the service with the verified-token cache off"
 stop_server

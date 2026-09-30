@@ -6,11 +6,12 @@ object Dependencies {
 
     // --- ZIO ecosystem ---
     val zio        = "2.1.26"
-    val zioJson    = "0.9.2"
+    val zioJson    = "1.1.0"
     val zioHttp    = "3.11.6"
     val zioLogging = "2.5.3"
-    val zioConfig  = "4.0.7"
-    val zioSchema  = "1.8.5"
+    val zioConfig  = "4.1.0"
+    val zioSchema  = "1.9.0"
+    val zioBlocks  = "0.0.54"
     val zioKafka   = "3.8.0"
 
     // --- HTTP ---
@@ -121,6 +122,9 @@ object Dependencies {
 
   lazy val zioSchemaProtobuf =
     "dev.zio" %% "zio-schema-protobuf" % Version.zioSchema
+
+  lazy val zioBlocksSchema =
+    "dev.zio" %% "zio-blocks-schema" % Version.zioBlocks
 
   lazy val zioKafka = "dev.zio" %% "zio-kafka" % Version.zioKafka
 

@@ -1,8 +1,5 @@
 package app.http
 
-import java.util.concurrent.ThreadLocalRandom
-import java.util.UUID
-
 import cats.data.Kleisli
 import cats.effect.Sync
 import cats.syntax.all.*
@@ -34,12 +31,7 @@ import org.typelevel.ci.*
   */
 object RequestId {
 
-  val HeaderName: CIString = ci"X-Request-ID"
-
-  /**
-    * Comfortably fits a UUID (36) or a 128-bit hex trace id (32).
-    */
-  private val MaxLength = 64
+  val HeaderName: CIString = CIString(RequestIds.HeaderName)
 
   /**
     * Applies request-id handling to the whole app. Outermost in the stack, so the id exists before
@@ -63,41 +55,11 @@ object RequestId {
   def find[F[_]](request: Request[F]): Option[String] =
     request.attributes.lookup(middleware.RequestId.requestIdAttrKey)
 
-  /**
-    * A random (version 4) UUID from the calling thread's own generator.
-    *
-    * Correlation only — never an authentication or authorization value, so it needs uniqueness, not
-    * unpredictability. `UUID.randomUUID()` draws from one shared, synchronized `SecureRandom`,
-    * which every request thread contends on under load; `ThreadLocalRandom` has no shared state.
-    */
-  private def mint[F[_]: Sync]: F[String] =
-    Sync[F].delay {
-      val random = ThreadLocalRandom.current()
-      val msb    = (random.nextLong() & ~0xf000L) | 0x4000L                        // version 4
-      val lsb    = (random.nextLong() & 0x3fffffffffffffffL) | 0x8000000000000000L // RFC 4122 variant
-      new UUID(msb, lsb).toString
-    }
+  // The id rules (reuse a safe inbound id, else mint one) are shared with the
+  // ZIO service: see [[RequestIds]].
+  private def mint[F[_]: Sync]: F[String] = Sync[F].delay(RequestIds.newId())
 
   private def inboundId[F[_]](request: Request[F]): Option[String] =
-    request.headers
-      .get(HeaderName)
-      .map(_.head.value)
-      .filter(isSafe)
-
-  /**
-    * A non-empty, bounded token of characters that cannot break a log line or a header: ASCII
-    * alphanumerics plus `. _ - :` (the separators real-world ids use). Deliberately not
-    * `isLetterOrDigit`, which would admit the whole Unicode letter range — including scripts that
-    * render nothing like what a log reader would grep for.
-    */
-  private def isSafe(value: String): Boolean =
-    value.nonEmpty && value.length <= MaxLength && value.forall(isSafeChar)
-
-  private def isSafeChar(character: Char): Boolean =
-    (character >= 'a' && character <= 'z') ||
-      (character >= 'A' && character <= 'Z') ||
-      (character >= '0' && character <= '9') ||
-      character == '.' || character == '_' ||
-      character == '-' || character == ':'
+    request.headers.get(HeaderName).map(_.head.value).flatMap(RequestIds.accept)
 
 }

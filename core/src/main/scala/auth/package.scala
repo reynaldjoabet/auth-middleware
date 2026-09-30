@@ -5,15 +5,6 @@ import io.github.iltotore.iron.constraint.all.*
 import io.github.iltotore.iron.constraint.collection.*
 import io.github.iltotore.iron.constraint.numeric.*
 import io.github.iltotore.iron.constraint.string.*
-import org.http4s.Method
-import org.http4s.Uri.Path
-import org.http4s.Uri.Scheme
-import org.typelevel.ci.*
-
-given CanEqual[CIString, CIString] = CanEqual.derived
-given CanEqual[Scheme, Scheme]     = CanEqual.derived
-given CanEqual[Method, Method]     = CanEqual.derived
-given CanEqual[Path, Path]         = CanEqual.derived
 
 // Issuer must reject query AND fragment
 type IssuerUri = Match["^https://[^?#\\s]+$"]

@@ -24,6 +24,7 @@ ThisBuild / scalacOptions := Seq(
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
 lazy val root = (project in file("."))
+  .dependsOn(core % "compile->compile;test->test")
   .settings(
     semanticdbEnabled    := true,
     name                 := "auth-middleware",
@@ -62,7 +63,6 @@ lazy val root = (project in file("."))
       "io.opentelemetry" % "opentelemetry-exporter-otlp"               % "1.66.0" % Runtime,
       "io.opentelemetry" % "opentelemetry-sdk-extension-autoconfigure" % "1.66.0" % Runtime,
       Dependencies.sageClientCe,
-      Dependencies.sageClientZio,
       guice,
       "jakarta.inject" % "jakarta.inject-api" % "2.0.1",
       scribe,
@@ -125,4 +125,54 @@ lazy val bench = (project in file("bench"))
     libraryDependencies ++= http4sNettyServer +: nettyNativeTransports,
     scalaVersion         := "3.9.0",
     publish / skip       := true
+  )
+
+// Framework-independent auth core, shared by the http4s service (root) and the
+// ZIO service (zio): refined types, token verification, credential parsing,
+// challenge rendering and request ids. No HTTP library, effect system, config
+// or logging library: each service brings its own. The two services depend on core and never on each other, so each can use the
+// same class names (auth.AccessTokenAuth, auth.AuthEvents, …) for its own
+// implementation without clashing on a classpath.
+lazy val core = (project in file("core"))
+  .settings(
+    name                 := "auth-core",
+    scalaVersion         := "3.9.0",
+    libraryDependencies ++= Seq(
+      // Framework-neutral: token verification, credential parsing, the
+      // challenge model. No HTTP server, effect system, config or logging.
+      iron,
+      nimbusJoseJwt,
+      nimbusOauth2Oidc,
+      Dependencies.caffeine,
+      munit
+    ),
+    publish / skip := true
+  )
+
+// The same Bearer-token middleware on ZIO + zio-http, to compare runtimes (see
+// README "http4s vs ZIO"). Built on core only: it differs from the http4s
+// service just in effect system, HTTP server and Redis client.
+lazy val zio = (project in file("zio"))
+  .dependsOn(core % "compile->compile;test->test")
+  .enablePlugins(JavaAppPackaging)
+  .settings(
+    name                 := "auth-middleware-zio",
+    libraryDependencies ++= Seq(
+      Dependencies.zio,
+      Dependencies.zioHttp,
+      Dependencies.sageClientZio,
+      Dependencies.zioConfig,
+      Dependencies.zioConfigTypesafe,
+      scribe,
+      // Routes Netty's and the Redis client's slf4j logging into scribe.
+      scribeSlf4j2,
+      munit
+    ),
+    scalaVersion             := "3.9.0",
+    Compile / mainClass      := Some("auth.Main"),
+    Universal / javaOptions ++= Seq(
+      "-J-XX:MaxRAMPercentage=75",
+      "-J-XX:+ExitOnOutOfMemoryError"
+    ),
+    publish / skip := true
   )

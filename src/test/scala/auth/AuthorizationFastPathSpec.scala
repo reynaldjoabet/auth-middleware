@@ -22,9 +22,10 @@ class AuthorizationFastPathSpec extends FunSuite {
   /**
     * What the code did before the fast path: http4s's typed lookup alone.
     */
-  private def reference(raw: String): Option[Option[(CIString, String)]] =
+  private def reference(raw: String): Option[Option[(String, String)]] =
     request(raw).headers.get[Authorization].map {
-      case Authorization(Credentials.Token(scheme, token)) => Some((scheme, token))
+      // CIString keeps the original text, so toString is the scheme as sent.
+      case Authorization(Credentials.Token(scheme, token)) => Some((scheme.toString, token))
       case _                                               => None
     }
 
@@ -57,18 +58,37 @@ class AuthorizationFastPathSpec extends FunSuite {
     "Bearer abc ",
     "",
     "=",
-    "Bearer a\"b"
+    "Bearer a\"b",
+    // auth-param forms, which exercise the full grammar's commit rules
+    "Bearer a=b",
+    "Bearer a=b, c=d",
+    "Bearer a = b",
+    "Bearer ,a=b",
+    "Bearer ,, a=b",
+    "Bearer a=b,",
+    "Bearer a=b, ",
+    "Bearer a=b ,c=d",
+    "Bearer a=b,,c=d",
+    "Bearer a=b,c",
+    "Bearer a=b c",
+    "Bearer a=\"x y\"",
+    "Bearer a=\"x\\\"y\"",
+    "Bearer a=\"unterminated",
+    "Bearer a=\"bad\\\u0001\"",
+    "Bearer a=",
+    "Bearer ,",
+    "Bearer abc==, d=e"
   )
 
   test("agrees with http4s on hand-picked edge cases") {
     edgeCases.foreach(assertAgrees)
   }
 
-  test("agrees with http4s on 50,000 random header values") {
+  test("agrees with http4s on 200,000 random header values") {
     val random   = new Random(20260930L)
-    val alphabet = "aZ09-._~+/= ,\"\t:;é@!#".toVector
+    val alphabet = "aZ09-._~+/= ,\"\t:;é@!#\\".toVector
     val schemes  = Vector("Bearer", "bearer", "DPoP", "Basic", "x", "")
-    (1 to 50_000).foreach { _ =>
+    (1 to 200_000).foreach { _ =>
       val body = Vector.fill(random.nextInt(12))(alphabet(random.nextInt(alphabet.size))).mkString
       val raw  =
         if (random.nextBoolean()) schemes(random.nextInt(schemes.size)) + " " + body else body
@@ -79,8 +99,8 @@ class AuthorizationFastPathSpec extends FunSuite {
   test("a real access token takes the fast path") {
     val token = TestTokens.sign(TestTokens.claims())
     assertEquals(
-      AccessTokenAuth.fastTokenCredentials(s"Bearer $token"),
-      Some((ci"Bearer", token))
+      CredentialExtraction.fastTokenCredentials(s"Bearer $token"),
+      Some(("Bearer", token))
     )
   }
 

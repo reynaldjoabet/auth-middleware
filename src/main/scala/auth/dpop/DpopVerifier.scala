@@ -132,10 +132,7 @@ object DpopVerifier {
   /**
     * `ath` claim value for an access token: base64url(SHA-256(token)).
     */
-  def accessTokenHash(accessToken: String): String =
-    Base64URL
-      .encode(sha256(accessToken.getBytes(StandardCharsets.US_ASCII)))
-      .toString
+  def accessTokenHash(accessToken: String): String = DpopKeys.accessTokenHash(accessToken)
 
   private def sha256(bytes: Array[Byte]): Array[Byte] =
     MessageDigest.getInstance("SHA-256").digest(bytes)

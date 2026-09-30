@@ -12,7 +12,7 @@ import io.github.iltotore.iron.*
   *   the `sub` claim, always present (required per RFC 9068). For machine-to-machine
   *   (`client_credentials`) tokens it equals the `client_id` (RFC 9068 §2.2); a user-delegated
   *   token's `sub` identifies the user and differs from the client. Per-route "an end user must be
-  *   present" is enforced by [[AccessTokenAuth.requireUser]] (which compares `sub` to `client_id`).
+  *   present" is enforced by `AccessTokenAuth.requireUser` (which compares `sub` to `client_id`).
   * @param clientId
   *   the OAuth client that obtained the token (`client_id` or `azp` claim), if present
   * @param scopes
@@ -24,7 +24,7 @@ import io.github.iltotore.iron.*
   *   the `exp` claim
   * @param acr
   *   the Authentication Context Class Reference the user satisfied at login; enforced per route by
-  *   [[AccessTokenAuth.requireAcr]] (RFC 9470 step-up)
+  *   `AccessTokenAuth.requireAcr` (RFC 9470 step-up)
   * @param authTime
   *   when the user actually authenticated (`auth_time`), used for `max_age` freshness checks in
   *   step-up flows
@@ -68,7 +68,7 @@ final case class AuthContext(
 object AuthContext {
 
   /**
-    * Default "is an end user present?" test used by [[AccessTokenAuth.requireUser]].
+    * Default "is an end user present?" test used by `AccessTokenAuth.requireUser`.
     *
     * A user-delegated token's `sub` identifies the user and differs from the client; a
     * `client_credentials` (M2M) token's `sub` equals its `client_id` (RFC 9068 §2.2). Override with

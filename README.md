@@ -2155,6 +2155,38 @@ These numbers are a floor. The load generator takes CPU from the server, half th
 | Cache the built `AuthContext`, not just the claims | Validation CPU down from 4.8% to 2.7% (no regex refinements on a cache hit) |
 | Thread-local RNG for request IDs, fast `Authorization` scan | Removes the shared `SecureRandom` lock and parser-combinator parsing from the request path |
 
+### http4s vs ZIO
+
+The repository has three modules:
+
+| Module | What it is | Depends on |
+|---|---|---|
+| `core` (artifact `auth-core`) | Framework-independent auth core: refined types, `TokenVerification` (key source, Nimbus processor, claims → `AuthContext`, failure classification, verified-token cache), `CredentialExtraction` (`Authorization` parsing), `AuthChallenge` (status, `WWW-Authenticate` and body for every error), `RequestIds`. Its only libraries are Nimbus, Caffeine and Iron. | nothing in this repo |
+| root | The http4s + cats-effect service (plus the Play annotation layer). Config: pureconfig. Logging: SLF4J → scribe. | `core` |
+| `zio` | The same Bearer-token middleware on ZIO 2 + zio-http 3 (Netty). Config: zio-config (`auth.ServiceConfig`). Logging: scribe (`auth.Logging`). | `core` only |
+
+`core` has no HTTP library, effect system, config or logging dependency; each service brings its own. The two services never depend on each other, so each has its own `auth.AccessTokenAuth`, `auth.AuthEvents` and so on without clashing. Everything that decides an outcome comes from `core`, so they differ only in effect system, HTTP server, Redis client, config loading and logging.
+
+`CredentialExtraction` ports the `Authorization` grammar from http4s-core rule for rule, including its backtracking behaviour, so `core` doesn't depend on http4s. `AuthorizationFastPathSpec` in the http4s service checks the port against http4s's own parser on hand-picked edge cases and 200,000 random headers.
+
+The ZIO service reads its own `zio/src/main/resources/application.conf`, which has the same keys and environment variables as the http4s service's, limited to what it uses. It doesn't need `DB_PASSWORD`. `auth.Logging` sets up one scribe console handler at `LOG_LEVEL`. `ZIO.log*` calls reach it through a `ZLogger` bridge, with annotations and spans printed as ` [key=value …]`. Netty and the Redis client reach it through `scribe-slf4j2`.
+
+`Conformance` in `core`'s tests is one list of 15 requests: valid, missing, forged, expired, query-string, duplicate headers, wrong scheme, unparseable, both `cnf` bindings, revoked, store down, oversized, lowercase scheme. It states the outcome each must produce, and each service runs it against its own middleware (`ConformanceSpec` in each module). Since both pass the same expectations, they make the same decisions.
+
+Run it with `SERVICE=zio bench/loadtest/run.sh`. Same machine as above, OpenTelemetry off for both (`OTEL_SDK_DISABLED=true`, as the ZIO build has none), 48 connections, best clean run of each:
+
+| Scenario | http4s + Ember | ZIO + zio-http | ZIO ÷ http4s |
+|---|---|---|---|
+| Bare server, `200 ok` only | ~80k | ~140–155k | ~1.8× |
+| `GET /health` (middleware layers, no auth) | 99k | 133k | 1.34× |
+| Bearer, one token (cache hit) | 70k | 121k | 1.73× |
+| Bearer, 20k tokens (caches + Redis) | 48k | 81k | 1.70× |
+| Bearer, 20k tokens, verified-token cache off | 27k | 37k | 1.39× |
+
+The gap is the HTTP layer. zio-http drives Netty directly, while Ember parses and writes through fs2 streams, so the bare-server ceiling differs by about 1.8×. The more a request's time goes to shared work, the smaller the gap: with the cache off, the RS256 check (the same Nimbus code in both) dominates, and the ratio drops to 1.4×. zio-http's `avoidContextSwitching` made no consistent difference. zio-http also listens with Netty's backlog (the OS maximum) rather than the JDK's 50, so it doesn't have Ember's limit on simultaneous new connections.
+
+What the ZIO build does not do: DPoP, introspection, mTLS, OpenTelemetry, and the readiness drain on shutdown. It is a like-for-like comparison of the Bearer path, not a replacement for the service.
+
 ### DPoP replay defence: the stateless and stateful flows
 
 A DPoP proof is a small JWT the client signs for each request with its own key (RFC 9449). It carries the method (`htm`), URL (`htu`), time (`iat`), a hash of the access token (`ath`) and a unique id (`jti`). The threat is **replay**: someone who captures a proof in transit sends it again. Two mechanisms stop that, and `auth.dpop.nonce.mode` (`DPOP_NONCE_MODE`) decides where their state lives when several nodes sit behind a load balancer:

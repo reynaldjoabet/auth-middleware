@@ -1,33 +1,14 @@
 package auth
 package accesstoken
 
-import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
-import java.text.ParseException
-import java.util.Base64
-
-import scala.jdk.CollectionConverters.*
-
 import cats.effect.{Resource, Sync}
 import cats.syntax.all.*
 
-import com.github.benmanes.caffeine.cache.{Cache, Caffeine, Expiry}
 import com.github.benmanes.caffeine.cache.stats.StatsCounter
-import com.nimbusds.jose.jwk.{JWKMatcher, JWKSelector}
-import com.nimbusds.jose.jwk.source.{JWKSource, JWKSourceBuilder}
-import com.nimbusds.jose.proc.{
-  BadJOSEException,
-  DefaultJOSEObjectTypeVerifier,
-  JWSVerificationKeySelector,
-  SecurityContext
-}
-import com.nimbusds.jose.util.DefaultResourceRetriever
-import com.nimbusds.jose.JOSEException
-import com.nimbusds.jose.KeySourceException
-import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
-import com.nimbusds.jwt.proc.{DefaultJWTClaimsVerifier, DefaultJWTProcessor}
-import com.nimbusds.oauth2.sdk.auth.X509CertificateConfirmation
-import com.nimbusds.oauth2.sdk.dpop.JWKThumbprintConfirmation
+import com.github.benmanes.caffeine.cache.Cache
+import com.nimbusds.jose.jwk.source.JWKSource
+import com.nimbusds.jose.proc.SecurityContext
+import com.nimbusds.jwt.proc.DefaultJWTProcessor
 import auth.revocation.{TokenDenylist, TokenIntrospection}
 
 /**
@@ -92,41 +73,20 @@ object AccessTokenValidator {
   ): Resource[F, AccessTokenValidator[F]] =
     Resource
       .make(Sync[F].delay {
-        val retriever = telemetry.instrumentJwksRetriever(
-          new DefaultResourceRetriever(
-            config.httpConnectTimeout.toMillis.toInt,
-            config.httpReadTimeout.toMillis.toInt,
-            config.jwksSizeLimitBytes
-          )
+        TokenVerification.keySource(
+          config,
+          retriever = Some(
+            telemetry.instrumentJwksRetriever(TokenVerification.retrieverFor(config))
+          ),
+          cacheListener = telemetry.jwksCacheListener[SecurityContext],
+          retryListener = telemetry.jwksRetryListener[SecurityContext],
+          outageListener = telemetry.jwksOutageListener[SecurityContext]
         )
-        // The listener overloads are what enable each layer, so these carry the
-        // same semantics as the plain `.retrying(true)` / `.outageTolerant(ttl)`
-        // calls they replace — they just also report what the layer did.
-        JWKSourceBuilder
-          .create[SecurityContext](config.jwksUri.toURL, retriever)
-          .cache(
-            config.jwksCacheTtl.toMillis,
-            config.jwksRefreshTimeout.toMillis,
-            telemetry.jwksCacheListener[SecurityContext]
-          )
-          // Scheduled: refresh in the background before expiry even on a quiet
-          // node, rather than on whichever request happens to arrive late.
-          .refreshAheadCache(
-            JWKSourceBuilder.DEFAULT_REFRESH_AHEAD_TIME,
-            true,
-            telemetry.jwksCacheListener[SecurityContext]
-          )
-          .retrying(telemetry.jwksRetryListener[SecurityContext])
-          .outageTolerant(
-            config.jwksOutageTtl.toMillis,
-            telemetry.jwksOutageListener[SecurityContext]
-          )
-          .build()
       }) {
         case closeable: java.io.Closeable => Sync[F].blocking(closeable.close())
         case _                            => Sync[F].unit
       }
-      .evalTap(warmUp(config, _))
+      .evalTap(keySource => Sync[F].blocking(TokenVerification.requireKeys(config, keySource)))
       .evalMap { keySource =>
         val instrumented = telemetry.instrumentDenylist(denylist)
         val revocation   =
@@ -138,31 +98,6 @@ object AccessTokenValidator {
             )
           else instrumented.pure[F]
         revocation.map(d => build(config, keySource, events, d, introspection, telemetry))
-      }
-
-  /**
-    * Fetch the key set once, through the full cache/retry stack, failing with a message an operator
-    * can act on.
-    */
-  private def warmUp[F[_]: Sync](
-      config: AccessTokenConfig,
-      keySource: JWKSource[SecurityContext]
-  ): F[Unit] =
-    Sync[F]
-      .blocking(keySource.get(new JWKSelector(new JWKMatcher.Builder().build()), null))
-      .adaptError { case e =>
-        new IllegalStateException(
-          s"Cannot fetch signing keys from ${config.jwksUri} at startup; refusing to serve " +
-            "without them",
-          e
-        )
-      }
-      .flatMap { keys =>
-        Sync[F].raiseWhen(keys.isEmpty)(
-          new IllegalStateException(
-            s"The key set at ${config.jwksUri} contains no keys; refusing to serve without them"
-          )
-        )
       }
 
   /**
@@ -235,72 +170,11 @@ object AccessTokenValidator {
       cacheStats: Option[StatsCounter]
   ) extends AccessTokenValidator[F] {
 
-    private val processor: DefaultJWTProcessor[SecurityContext] = {
-      val p = new DefaultJWTProcessor[SecurityContext]()
-      p.setJWSTypeVerifier(
-        new DefaultJOSEObjectTypeVerifier[SecurityContext](
-          config.acceptedTokenTypes.toSeq*
-        )
-      )
-      p.setJWSKeySelector(
-        new JWSVerificationKeySelector[SecurityContext](
-          config.allowedAlgorithms.asJava,
-          keySource
-        )
-      )
-      // The default implementation, DefaultJWTClaimsVerifier, checks exp / nbf (with clock-skew tolerance), and whatever exact-match/required claims you configured — iss, aud
-      // public DefaultJWTClaimsVerifier(final Set<String> acceptedAudience,
-      // 		final JWTClaimsSet exactMatchClaims,
-      // 		final Set<String> requiredClaims,
-      // 		final Set<String> prohibitedClaims)
+    private val processor: DefaultJWTProcessor[SecurityContext] =
+      TokenVerification.processor(config, keySource)
 
-      val claimsVerifier = new DefaultJWTClaimsVerifier[SecurityContext](
-        Set(config.audience).asJava, // acceptedAudience
-        new JWTClaimsSet.Builder()
-          .issuer(config.issuer)
-          .build(),                   // exactMatchClaims
-        config.requiredClaims.asJava, // requiredClaims
-        null                          // prohibitedClaims
-      )
-      claimsVerifier.setMaxClockSkew(config.clockSkew.toSeconds.toInt)
-      p.setJWTClaimsSetVerifier(claimsVerifier)
-      p
-    }
-
-    /**
-      * Successfully verified tokens, keyed by base64url(SHA-256(token)) so raw tokens are never
-      * retained. Only the signature/claims verification is cached — revocation runs every time.
-      * Each entry expires at the earlier of the token's `exp` and `verifiedTokenCacheMaxTtl`.
-      */
     private val verified: Option[Cache[String, AuthContext]] =
-      Option.when(
-        config.verifiedTokenCacheMaxEntries > 0 &&
-          config.verifiedTokenCacheMaxTtl > scala.concurrent.duration.Duration.Zero
-      ) {
-        val maxTtlNanos = config.verifiedTokenCacheMaxTtl.toNanos
-        val sized       = Caffeine.newBuilder().maximumSize(config.verifiedTokenCacheMaxEntries)
-        cacheStats
-          .fold(sized)(stats => sized.recordStats(() => stats))
-          .expireAfter(new Expiry[String, AuthContext] {
-            def expireAfterCreate(key: String, ctx: AuthContext, now: Long): Long = {
-              val remainingMillis = ctx.expiresAt.toEpochMilli - System.currentTimeMillis()
-              math.max(0L, math.min(maxTtlNanos, remainingMillis * 1_000_000L))
-            }
-            def expireAfterUpdate(
-                key: String,
-                ctx: AuthContext,
-                now: Long,
-                currentDuration: Long
-            ): Long = currentDuration
-            def expireAfterRead(
-                key: String,
-                ctx: AuthContext,
-                now: Long,
-                currentDuration: Long
-            ): Long = currentDuration
-          })
-          .build[String, AuthContext]()
-      }
+      TokenVerification.verifiedTokenCache(config, cacheStats)
 
     def validate(token: String): F[Either[AuthError, AuthContext]] =
       if (token.length > config.maxTokenLength)
@@ -314,7 +188,7 @@ object AccessTokenValidator {
           case Some(cache) =>
             Sync[F]
               .delay {
-                val key = tokenKey(token)
+                val key = TokenVerification.tokenKey(token)
                 (key, Option(cache.getIfPresent(key)))
               }
               .flatMap {
@@ -332,28 +206,24 @@ object AccessTokenValidator {
       // work-stealing pool `blocking` hands the worker off rather than
       // shifting threads.
       Sync[F]
-        .blocking(processor.process(SignedJWT.parse(token), null))
+        .blocking(TokenVerification.verify(processor, token))
         .attempt
         .flatMap {
           // The finished context is what gets cached, so a hit skips re-reading
           // and re-refining the claims as well as the signature check.
           case Right(claims) =>
-            contextOf(claims) match {
+            TokenVerification.contextOf(claims) match {
               case Left((err, detail)) => reject(err, detail)
               case Right(ctx)          =>
                 remember.fold(Sync[F].unit) { case (cache, key) =>
                   Sync[F].delay(cache.put(key, ctx))
                 } *> checkDenylist(token, ctx)
             }
-          case Left(e: ParseException) =>
-            reject(AuthError.InvalidToken.Malformed, e.getMessage)
-          case Left(e: BadJOSEException) =>
-            reject(AuthError.InvalidToken.Rejected, e.getMessage)
-          case Left(e: KeySourceException) =>
-            reject(AuthError.ValidationUnavailable, e.getMessage)
-          case Left(e: JOSEException) =>
-            reject(AuthError.InvalidToken.Rejected, e.getMessage)
-          case Left(other) => Sync[F].raiseError(other)
+          case Left(e) =>
+            TokenVerification.failureOf(e) match {
+              case Some((err, detail)) => reject(err, detail)
+              case None                => Sync[F].raiseError(e)
+            }
         }
 
     // `jti` presence is governed solely by `config.requiredClaims` (Nimbus rejects
@@ -411,128 +281,11 @@ object AccessTokenValidator {
     private def accept(ctx: AuthContext): F[Either[AuthError, AuthContext]] =
       events.authSucceeded(ctx).as(ctx.asRight)
 
-    /**
-      * The authenticated principal a verified claims set describes, or why it cannot be one. Pure
-      * and deterministic in the claims, which is what makes the result safe to cache.
-      */
-    private def contextOf(claims: JWTClaimsSet): Either[(AuthError, String), AuthContext] =
-      for {
-        // `sub` is required (RFC 9068 §2.2 — present even for client_credentials,
-        // where it equals the client_id). Its presence is also enforced by
-        // Nimbus via `config.requiredClaims`.
-        sub <- Option(claims.getSubject)
-                 .toRight((AuthError.InvalidToken.Rejected, "missing sub claim"))
-        subject <- Subject
-                     .either(sub)
-                     .left
-                     .map(m => (AuthError.InvalidToken.Rejected, m))
-        tokenId <- Option(claims.getJWTID) match {
-                     case None    => Right(None)
-                     case Some(j) =>
-                       ReceivedJwtId
-                         .either(j)
-                         .bimap(m => (AuthError.InvalidToken.Rejected, m), Some(_))
-                   }
-        // `exp` is in the default requiredClaims, but that set is
-        // operator-configurable — reject rather than NPE if it was relaxed.
-        expiresAt <- Option(claims.getExpirationTime)
-                       .map(_.toInstant)
-                       .toRight((AuthError.InvalidToken.Rejected, "missing exp claim"))
-        // Fail closed on a present-but-malformed cnf: never silently downgrade a
-        // sender-constrained token to an unbound one.
-        confirmation <- confirmationOf(claims) match {
-                          case Cnf.Unbound    => Right(None)
-                          case Cnf.Bound(c)   => Right(Some(c))
-                          case Cnf.Invalid(r) => Left((AuthError.InvalidToken.Rejected, r))
-                        }
-      } yield AuthContext(
-        subject = subject,
-        clientId = stringClaim(claims, "client_id")
-          .orElse(stringClaim(claims, "azp"))
-          .flatMap(ClientId.option),
-        scopes = rawScopeTokens(claims).flatMap(ScopeToken.option).toSet,
-        tokenId = tokenId,
-        expiresAt = expiresAt,
-        acr = stringClaim(claims, "acr").flatMap(Acr.option),
-        authTime = dateClaim(claims, "auth_time"),
-        confirmation = confirmation,
-        claims = claims
-      )
-
-    /**
-      * Read the `cnf` confirmation (Nimbus-parsed): `jkt` (DPoP, RFC 9449) or `x5t#S256` (mTLS, RFC
-      * 8705). A present-but-malformed `cnf` is reported as [[Cnf.Invalid]] so a broken binding
-      * fails closed rather than silently downgrading to an unbound token. Enforcement of the
-      * binding itself happens in the middleware, which has access to the request.
-      */
-    private def confirmationOf(claims: JWTClaimsSet): Cnf = {
-      val jkt =
-        Option(JWKThumbprintConfirmation.parse(claims)).map(_.getValue.toString)
-      val x5t = Option(X509CertificateConfirmation.parse(claims))
-        .map(_.getValue.toString)
-      (jkt, x5t) match {
-        case (None, None)    => Cnf.Unbound
-        case (Some(j), None) =>
-          JwkThumbprint.option(j) match {
-            case Some(t) => Cnf.Bound(ConfirmationClaim.DPoP(t))
-            case None    =>
-              Cnf.Invalid("cnf.jkt is not a valid base64url SHA-256 thumbprint")
-          }
-        case (None, Some(c)) =>
-          CertificateThumbprint.option(c) match {
-            case Some(t) => Cnf.Bound(ConfirmationClaim.MutualTls(t))
-            case None    =>
-              Cnf.Invalid(
-                "cnf.x5t#S256 is not a valid base64url SHA-256 thumbprint"
-              )
-          }
-        case (Some(_), Some(_)) =>
-          Cnf.Invalid("cnf carries both jkt and x5t#S256")
-      }
-    }
-
     private def reject(
         error: AuthError,
         detail: String
     ): F[Either[AuthError, AuthContext]] =
       events.authFailed(error, Option(detail).getOrElse("")).as(error.asLeft)
-
-    private def stringClaim(
-        claims: JWTClaimsSet,
-        name: String
-    ): Option[String] =
-      claims.getClaim(name) match {
-        case s: String => Some(s)
-        case _         => None
-      }
-
-    private def dateClaim(
-        claims: JWTClaimsSet,
-        name: String
-    ): Option[java.time.Instant] =
-      try Option(claims.getDateClaim(name)).map(_.toInstant)
-      catch { case _: ParseException => None }
-
-    private def tokenKey(token: String): String =
-      Base64.getUrlEncoder.withoutPadding.encodeToString(
-        MessageDigest
-          .getInstance("SHA-256")
-          .digest(token.getBytes(StandardCharsets.US_ASCII))
-      )
-
-    // Both forms seen in the wild: `scope` as a space-delimited string (RFC 9068)
-    // and `scp` as a JSON string array (Okta, Microsoft Entra ID). Returns the
-    // raw, unrefined candidates; `ScopeToken.option` refines each and drops malformed.
-    private def rawScopeTokens(claims: JWTClaimsSet): List[String] =
-      claims.getClaim("scope") match {
-        case s: String => s.split(' ').iterator.filter(_.nonEmpty).toList
-        case _         =>
-          claims.getClaim("scp") match {
-            case l: java.util.List[?] =>
-              l.asScala.collect { case s: String => s }.toList
-            case _ => Nil
-          }
-      }
 
   }
 

@@ -12,7 +12,7 @@ import cats.syntax.all.*
 import cats.Applicative
 
 import javax.crypto.{Cipher, KeyGenerator, SecretKey}
-import javax.crypto.spec.{GCMParameterSpec, SecretKeySpec}
+import javax.crypto.spec.GCMParameterSpec
 
 /**
   * Outcome of checking the `nonce` claim of a DPoP proof — mirrors Duende's
@@ -244,12 +244,6 @@ object DpopNonceValidator {
   /**
     * Wrap key material from a secret manager (16, 24 or 32 bytes).
     */
-  def keyFromBytes(bytes: Array[Byte]): SecretKey = {
-    require(
-      Set(16, 24, 32).contains(bytes.length),
-      s"AES key must be 16, 24 or 32 bytes, got ${bytes.length}"
-    )
-    new SecretKeySpec(bytes, "AES")
-  }
+  def keyFromBytes(bytes: Array[Byte]): SecretKey = DpopKeys.nonceKeyFromBytes(bytes)
 
 }

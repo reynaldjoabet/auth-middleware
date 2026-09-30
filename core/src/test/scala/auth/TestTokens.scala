@@ -6,7 +6,7 @@ import java.util.Date
 import scala.concurrent.duration.*
 
 import auth.accesstoken.*
-import auth.dpop.DpopVerifier
+import auth.dpop.DpopKeys
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jose.crypto.{ECDSASigner, MACSigner, RSASSASigner}
 import com.nimbusds.jose.jwk.{Curve, ECKey, JWKSet, RSAKey}
@@ -122,7 +122,7 @@ object TestTokens {
       .claim("htm", method)
       .claim("htu", htu)
       .issueTime(new Date(System.currentTimeMillis() + iatOffset.toMillis))
-      .claim("ath", ath.getOrElse(DpopVerifier.accessTokenHash(accessToken)))
+      .claim("ath", ath.getOrElse(DpopKeys.accessTokenHash(accessToken)))
     nonce.foreach(b.claim("nonce", _))
     val claimsSet = b.build()
     val jwt       = new SignedJWT(

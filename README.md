@@ -2127,7 +2127,7 @@ Clients reuse an access token for its whole lifetime, so in steady state almost 
 
 ### End-to-end load test
 
-`bench/loadtest/run.sh` runs the packaged service (`target/universal/stage`) against throwaway local Postgres, Redis and an HTTPS JWKS endpoint, and drives it with `wrk`. It needs `postgres`, `redis-server`, `wrk`, `openssl`, `keytool` and `python3`, and cleans up after itself. Knobs: `DURATION`, `THREADS`, `CONNS`, `TOKENS`, `PROOFS`, `SERVER_OPTS`. `MODE=serve` starts everything and holds it, for profiling.
+`bench/loadtest/run.sh` runs the packaged service (the output of `sbt stage`) against throwaway local Postgres, Redis and an HTTPS JWKS endpoint, and drives it with `wrk`. It needs `postgres`, `redis-server`, `wrk`, `openssl`, `keytool` and `python3`, and cleans up after itself. Knobs: `DURATION`, `THREADS`, `CONNS`, `TOKENS`, `PROOFS`, `SERVER_OPTS`. `MODE=serve` starts everything and holds it, for profiling.
 
 Results on an 8-core Apple M1 (4 performance + 4 efficiency cores), with `wrk` on the same machine (4 threads, 48 connections, 20 s runs), 1% trace sampling and cats-effect tracing off. **Every scenario completed with zero socket errors and zero non-2xx responses.**
 

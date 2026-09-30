@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end load test of the packaged service (target/universal/stage), run
+# End-to-end load test of the packaged service (the output of `sbt stage`), run
 # against throwaway local dependencies: Postgres, Redis, and an HTTPS JWKS
 # endpoint serving a freshly minted issuer key. Everything lives in $WORK and
 # is torn down on exit.
@@ -85,7 +85,7 @@ start_server() { # extra JAVA_OPTS
     OTEL_TRACES_SAMPLER=parentbased_traceidratio OTEL_TRACES_SAMPLER_ARG=0.01 \
     OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none \
     JAVA_OPTS="-Xms2g -Xmx2g -Djavax.net.ssl.trustStore=$WORK/tls/truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit -Djavax.net.ssl.trustStoreType=PKCS12 $SERVER_OPTS ${1:-}" \
-    "$ROOT/target/universal/stage/bin/auth-middleware" >"$SERVER_LOG" 2>&1 &
+    "$STAGE_BIN" >"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
   for _ in $(seq 1 60); do
     if curl -fs "$BASE/ready" >/dev/null 2>&1; then return 0; fi
@@ -112,6 +112,14 @@ log "work dir: $WORK"
 
 log "Building the packaged service and the token minter"
 (cd "$ROOT" && sbt --client "stage; bench/compile") | grep -E "error|success" | tail -2
+
+# `stage` writes to target/out/jvm/scala-*/auth-middleware/universal/stage on
+# sbt 2 and target/universal/stage on sbt 1. Take the newest, so a stale tree
+# from the other layout can never be the one under test.
+STAGE_BIN=$(ls -t "$ROOT"/target/out/jvm/scala-*/auth-middleware/universal/stage/bin/auth-middleware \
+  "$ROOT"/target/universal/stage/bin/auth-middleware 2>/dev/null | head -1)
+[[ -x "$STAGE_BIN" ]] || { echo "no staged service found; run: sbt --client stage" >&2; exit 1; }
+log "Service under test: $STAGE_BIN"
 
 log "TLS for the JWKS endpoint (self-signed, trusted only by the server under test)"
 mkdir -p "$WORK/tls" "$WORK/jwks"

@@ -57,6 +57,12 @@ object Database {
         .configure(getClass.getClassLoader)
         .dataSource(ds)
         .locations("classpath:db/migration")
+        // Pin where the history table lives. Left to the connection's
+        // search_path ("$user", public), it moves: V1 creates schema `auth`,
+        // so for a database user named `auth` (the default) the first boot
+        // records history in `public` and every later boot looks in `auth`,
+        // finds tables but no history, and refuses to start.
+        .defaultSchema("public")
         // Checksum drift on an already-applied migration means the file was
         // edited after the fact; fail rather than run on an unknown schema.
         .validateOnMigrate(true)

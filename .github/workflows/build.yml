@@ -92,4 +92,4 @@ jobs:
         uses: sbt/setup-sbt@v1
 
       - name: Compile and test
-        run: sbt -v "++${{ matrix.scala }}" "Test/compile; test"
+        run: sbt -v "++${{ matrix.scala }}" "Test/compile; test; bench/Jmh/compile; Docker/stage"

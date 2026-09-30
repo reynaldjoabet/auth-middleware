@@ -14,9 +14,11 @@ object Dependencies {
     val zioKafka   = "3.8.0"
 
     // --- HTTP ---
-    val http4s = "0.23.37"
-    val sttp4  = "4.0.25"
-    val tapir  = "1.13.18"
+    val http4s      = "0.23.38"
+    val http4sNetty = "0.7.1"
+    val netty       = "4.2.17.Final"
+    val sttp4       = "4.0.25"
+    val tapir       = "1.13.18"
 
     // --- JSON ---
     val jsoniter = "2.41.2"
@@ -127,6 +129,18 @@ object Dependencies {
   lazy val emberServer = http4s("ember-server")
   lazy val emberClient = http4s("ember-client")
   lazy val http4sCirce = http4s("circe")
+
+  // Netty backend for http4s, plus Netty's native transports (epoll on Linux,
+  // kqueue on macOS). Used only by the bench project's backend comparison
+  // (bench.BareNetty): on the same machine it measured ~40% below Ember.
+  lazy val http4sNettyServer = "org.http4s" %% "http4s-netty-server" % Version.http4sNetty
+
+  lazy val nettyNativeTransports = Seq(
+    ("io.netty" % "netty-transport-native-epoll"  % Version.netty).classifier("linux-x86_64"),
+    ("io.netty" % "netty-transport-native-epoll"  % Version.netty).classifier("linux-aarch_64"),
+    ("io.netty" % "netty-transport-native-kqueue" % Version.netty).classifier("osx-aarch_64"),
+    ("io.netty" % "netty-transport-native-kqueue" % Version.netty).classifier("osx-x86_64")
+  )
 
   lazy val sttpCore              = sttp("core")
   lazy val sttpJsoniter          = sttp("jsoniter")

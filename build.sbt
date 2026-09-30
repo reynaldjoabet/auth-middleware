@@ -113,3 +113,16 @@ addCommandAlias("fmtCheck", "scalafmtCheckAll; scalafmtSbtCheck")
 Test / parallelExecution := true
 
 ThisBuild / outputStrategy := Some(StdoutOutput)
+
+// JMH microbenchmarks for the authentication hot path. Not part of the
+// service; run with e.g. `bench/Jmh/run -i 5 -wi 3 -f 1 -t 1`.
+lazy val bench = (project in file("bench"))
+  .dependsOn(root)
+  .enablePlugins(JmhPlugin)
+  .settings(
+    name := "auth-middleware-bench",
+    // Only for bench.BareNetty, the backend comparison: the service runs on Ember.
+    libraryDependencies ++= http4sNettyServer +: nettyNativeTransports,
+    scalaVersion         := "3.9.0",
+    publish / skip       := true
+  )

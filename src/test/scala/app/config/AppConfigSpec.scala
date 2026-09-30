@@ -26,6 +26,9 @@ class AppConfigSpec extends FunSuite {
             idle-timeout = 60 seconds
             shutdown-timeout = 30 seconds
             max-connections = 1024
+            max-in-flight = 1024
+            request-timeout = 10 seconds
+            drain-delay = 5 seconds
           }
           db {
             host = localhost

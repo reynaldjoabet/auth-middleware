@@ -8,11 +8,12 @@ import java.util.Base64
 
 import scala.jdk.CollectionConverters.*
 
-import cats.effect.Sync
+import cats.effect.{Resource, Sync}
 import cats.syntax.all.*
 
 import com.github.benmanes.caffeine.cache.{Cache, Caffeine, Expiry}
 import com.github.benmanes.caffeine.cache.stats.StatsCounter
+import com.nimbusds.jose.jwk.{JWKMatcher, JWKSelector}
 import com.nimbusds.jose.jwk.source.{JWKSource, JWKSourceBuilder}
 import com.nimbusds.jose.proc.{
   BadJOSEException,
@@ -75,6 +76,12 @@ object AccessTokenValidator {
     * When `config.revocationCacheTtl` is positive the denylist is fronted by
     * [[TokenDenylist.cached]]; the telemetry sits beneath the cache, so the denylist metrics count
     * real store round trips only.
+    *
+    * Keys are fetched during acquisition, and acquisition fails if they cannot be: a node that
+    * cannot verify a single token must not report ready and take traffic, and the first requests
+    * after a deploy must not all queue behind the same cold fetch. After that the key set is
+    * refreshed on a schedule, ahead of expiry, so no request waits on a routine refresh. The
+    * refresh thread is stopped when the `Resource` is released.
     */
   def default[F[_]: Sync](
       config: AccessTokenConfig,
@@ -82,9 +89,9 @@ object AccessTokenValidator {
       denylist: TokenDenylist[F],
       introspection: Option[TokenIntrospection[F]] = None,
       telemetry: AuthTelemetry[F] = AuthTelemetry.noop[F]
-  ): F[AccessTokenValidator[F]] =
-    Sync[F]
-      .delay {
+  ): Resource[F, AccessTokenValidator[F]] =
+    Resource
+      .make(Sync[F].delay {
         val retriever = telemetry.instrumentJwksRetriever(
           new DefaultResourceRetriever(
             config.httpConnectTimeout.toMillis.toInt,
@@ -102,14 +109,25 @@ object AccessTokenValidator {
             config.jwksRefreshTimeout.toMillis,
             telemetry.jwksCacheListener[SecurityContext]
           )
+          // Scheduled: refresh in the background before expiry even on a quiet
+          // node, rather than on whichever request happens to arrive late.
+          .refreshAheadCache(
+            JWKSourceBuilder.DEFAULT_REFRESH_AHEAD_TIME,
+            true,
+            telemetry.jwksCacheListener[SecurityContext]
+          )
           .retrying(telemetry.jwksRetryListener[SecurityContext])
           .outageTolerant(
             config.jwksOutageTtl.toMillis,
             telemetry.jwksOutageListener[SecurityContext]
           )
           .build()
+      }) {
+        case closeable: java.io.Closeable => Sync[F].blocking(closeable.close())
+        case _                            => Sync[F].unit
       }
-      .flatMap { keySource =>
+      .evalTap(warmUp(config, _))
+      .evalMap { keySource =>
         val instrumented = telemetry.instrumentDenylist(denylist)
         val revocation   =
           if (config.revocationCacheTtl > scala.concurrent.duration.Duration.Zero)
@@ -120,6 +138,31 @@ object AccessTokenValidator {
             )
           else instrumented.pure[F]
         revocation.map(d => build(config, keySource, events, d, introspection, telemetry))
+      }
+
+  /**
+    * Fetch the key set once, through the full cache/retry stack, failing with a message an operator
+    * can act on.
+    */
+  private def warmUp[F[_]: Sync](
+      config: AccessTokenConfig,
+      keySource: JWKSource[SecurityContext]
+  ): F[Unit] =
+    Sync[F]
+      .blocking(keySource.get(new JWKSelector(new JWKMatcher.Builder().build()), null))
+      .adaptError { case e =>
+        new IllegalStateException(
+          s"Cannot fetch signing keys from ${config.jwksUri} at startup; refusing to serve " +
+            "without them",
+          e
+        )
+      }
+      .flatMap { keys =>
+        Sync[F].raiseWhen(keys.isEmpty)(
+          new IllegalStateException(
+            s"The key set at ${config.jwksUri} contains no keys; refusing to serve without them"
+          )
+        )
       }
 
   /**

@@ -131,13 +131,20 @@ object MultiNodeMain extends IOApp.Simple {
       // the denylist and the jti set both in Redis, "the cluster is slow" and
       // "Redis is slow" are the same picture until something separates them.
       telemetry <- AuthTelemetry.otel[IO](meter)
+      shed      <- Resource.eval(
+                meter
+                  .counter[Long]("http.server.shed")
+                  .withDescription("Requests rejected 503 by load shedding")
+                  .create
+              )
 
       server <- Server.resource[IO](
                   cfg,
                   denylist,
                   events,
                   telemetry,
-                  jtiStore = jtiStore
+                  jtiStore = jtiStore,
+                  onShed = Some(shed.inc())
                 )
     } yield server
 

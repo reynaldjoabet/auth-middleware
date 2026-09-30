@@ -41,9 +41,15 @@ object Main extends IOApp.Simple {
       // Counters say what was decided; this says what it cost and which
       // dependency spent it.
       telemetry <- AuthTelemetry.otel[IO](meter)
+      shed      <- Resource.eval(
+                meter
+                  .counter[Long]("http.server.shed")
+                  .withDescription("Requests rejected 503 by load shedding")
+                  .create
+              )
       // No jti/nonce override: single node uses the in-memory jti checker and
       // config-driven stateless nonces. Redis here backs only revocation.
-      server <- Server.resource[IO](cfg, denylist, events, telemetry)
+      server <- Server.resource[IO](cfg, denylist, events, telemetry, onShed = Some(shed.inc()))
     } yield server
 
   val run: IO[Unit] =

@@ -31,13 +31,26 @@ final case class AppConfig(
 
 /**
   * Ember server binding and back-pressure knobs.
+  *
+  * @param maxInFlight
+  *   requests handled concurrently before the excess is shed with `503` (see
+  *   [[app.http.LoadShedding]])
+  * @param requestTimeout
+  *   upper bound on producing one response; past it the client gets `503` and the work is cancelled
+  * @param drainDelay
+  *   on shutdown, how long the node keeps serving with readiness failing before it stops accepting
+  *   — time for the load balancer to stop routing here. `drainDelay + shutdownTimeout` must stay
+  *   below the platform's termination grace period.
   */
 final case class HttpServerConfig(
     host: Host,
     port: Port,
     idleTimeout: FiniteDuration,
     shutdownTimeout: FiniteDuration,
-    maxConnections: Int
+    maxConnections: Int,
+    maxInFlight: Int :| Positive,
+    requestTimeout: FiniteDuration,
+    drainDelay: FiniteDuration
 ) derives ConfigReader
 
 /**

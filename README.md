@@ -2187,6 +2187,55 @@ The gap is the HTTP layer. zio-http drives Netty directly, while Ember parses an
 
 What the ZIO build does not do: DPoP, introspection, mTLS, OpenTelemetry, and the readiness drain on shutdown. It is a like-for-like comparison of the Bearer path, not a replacement for the service.
 
+### Redis or Postgres for the shared auth state
+
+The state every node must share is the revocation denylist, the spent DPoP proof `jti`s and, in nonce mode `redis`, the single-use nonces. It can live in Redis or in the Postgres database the service already uses. `STORE_BACKEND=postgres` (`app.store.backend`) selects Postgres. The http4s service then uses `app.infra.postgres.PostgresStores` (Skunk) and the tables from migration `V2__shared_auth_state.sql`, and doesn't connect to Redis at all.
+
+Concurrent calls of one kind are answered by a single statement, with the keys passed as arrays (`app.infra.postgres.Batcher`):
+
+| Operation | Redis | Postgres, for a batch of keys |
+|---|---|---|
+| Is this token revoked? | `EXISTS revoked:jti:<jti>` | `SELECT jti … WHERE jti = ANY($1) AND expires_at > now()` |
+| Spend a proof `jti` | `SET dpop:jti:<key> 1 NX EX <ttl>` | `INSERT … SELECT … unnest($1, $2) ON CONFLICT DO UPDATE … WHERE expired RETURNING jti` |
+| Mint a nonce | `SET dpop:nonce:<nonce> 1 EX <ttl>` | `INSERT … SELECT … unnest($1, $2)` |
+| Consume a nonce | `DEL dpop:nonce:<nonce>` | `DELETE … WHERE nonce = ANY($1) AND expires_at > now() RETURNING nonce` |
+
+Batching doesn't add any waiting. A worker takes the first key as soon as it arrives, and it picks up the keys that queued behind it only once it holds a session. At low load a batch is one key; batches grow only when calls arrive faster than statements finish, which is when merging them pays. A key that appears twice in one batch is answered as two calls in a row would be. Keys are written in sorted order, so two statements with overlapping keys lock them in the same order and can't deadlock. `store.postgres.max-batch` (default 256) caps a batch, and `1` turns batching off.
+
+Expiry is checked in every query, so an expired row is treated as absent even before it is deleted. Each node deletes expired rows in the background, in batches, on a session of its own, so the request path never waits for it. `SKIP LOCKED` stops nodes that sweep at the same moment from blocking each other. The DPoP tables use a BRIN index on `expires_at`, which is tiny and nearly free to maintain, instead of a btree that every insert would have to update.
+
+The stores use their own sessions (`store.postgres.sessions`, default 16, plus one for the sweeper), separate from the HikariCP pool. Skunk's pool resets a session every time one is returned, which costs two extra round trips per call, so `SessionPool` keeps a fixed set of sessions instead. Skunk can't cancel a statement that is in progress. So a call waits at most `command-timeout` and then fails closed with `503`, and the sessions' `statement_timeout` makes Postgres abandon the statement too.
+
+`bench/loadtest/store-bench.sh` measures the stores on their own (`bench.StoreThroughput`), with no HTTP or token verification in the way. It runs 48 concurrent callers against a throwaway Postgres and Redis on the same laptop. Every configuration runs once per round, so noise hits them all, and the table shows the median of 3 rounds. The CPU columns are CPU time per call, in the benchmark's JVM and in the database server.
+
+| Operation | Backend | Calls/s | p99 | JVM CPU | DB CPU |
+|---|---|---|---|---|---|
+| Revocation check | Redis | 213k | 0.6 ms | 9 µs | 3 µs |
+| | Postgres, 1 statement per call | 35k | 4.4 ms | 114 µs | 70 µs |
+| | Postgres, batched | 68k | 6.0 ms | 50 µs | 27 µs |
+| Spend a `jti` | Redis | 199k | 0.7 ms | 8 µs | 3 µs |
+| | Postgres, 1 statement per call | 33k | 4.2 ms | 122 µs | 60 µs |
+| | Postgres, batched | 89k | 3.2 ms | 47 µs | 20 µs |
+| Mint + consume a nonce | Redis | 105k | 0.9 ms | 18 µs | 7 µs |
+| | Postgres, 1 statement per call | 16k | 8.1 ms | 247 µs | 120 µs |
+| | Postgres, batched | 32k | 5.8 ms | 145 µs | 61 µs |
+
+What these numbers say:
+
+- **Batching doubles to nearly triples Postgres throughput and cuts CPU per call by about 2.5×**, on both sides of the connection.
+- **UNLOGGED tables don't help.** Also measured: making the two DPoP tables UNLOGGED (no WAL) changed nothing beyond ±10%. With `synchronous_commit = off` a write doesn't wait for its WAL record to reach disk, so skipping WAL saves little, and UNLOGGED tables are emptied after a crash and aren't replicated. The tables stay logged.
+- **Redis still costs 5–6× less CPU per call.** Most of Postgres's cost is now on the client side: encoding, decoding and the protocol in Skunk. The server side (a statement through the executor) is less than half.
+
+At the HTTP level (`bench/loadtest/run.sh` with `STORE=postgres`, measured before batching), Postgres was indistinguishable from Redis behind the 1 s revocation cache, and about 30% slower where every request touches the store (revocation cache off, and every DPoP request). The HTTP runs after batching weren't clean enough to report: another application on the laptop moved the ceiling by 2–3× between runs.
+
+Postgres is the better store in these respects:
+
+- **Revocations survive restarts and failover.** Redis as configured here keeps nothing on disk, so restarting it forgets every revocation, and a failover to a replica that hadn't yet received a `SET` loses that write too. In Postgres a revocation is a committed, replicated row.
+- **One fewer system to run.** No Redis to deploy, secure, monitor and fail over, and one failure domain instead of two.
+- **Revocation can be transactional.** Revoking a user's tokens can commit in the same transaction as the account change that caused it. It is also visible to plain SQL for auditing.
+
+Use Postgres when the shared-state load is mostly revocation checks behind the cache and durability or fewer moving parts matter. Keep Redis when DPoP traffic is heavy, because every DPoP request writes to the store. A mixed deployment (denylist in Postgres, DPoP `jti`s in Redis) would need a per-store backend setting, which doesn't exist yet.
+
 ### DPoP replay defence: the stateless and stateful flows
 
 A DPoP proof is a small JWT the client signs for each request with its own key (RFC 9449). It carries the method (`htm`), URL (`htu`), time (`iat`), a hash of the access token (`ath`) and a unique id (`jti`). The threat is **replay**: someone who captures a proof in transit sends it again. Two mechanisms stop that, and `auth.dpop.nonce.mode` (`DPOP_NONCE_MODE`) decides where their state lives when several nodes sit behind a load balancer:

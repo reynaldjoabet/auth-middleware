@@ -20,6 +20,8 @@
 #                                                 DPoP jtis and nonces) in
 #                                                 Postgres instead of Redis
 #   STORE=postgres STORE_PG_MAX_BATCH=1 ...     # ...one statement per call
+#   ROOT=/path/to/other/checkout bench/loadtest/run.sh  # test another tree
+#                                                 with this harness
 #
 # CONNS stays below 50 on purpose. fs2 binds the listening socket with the
 # JDK's default backlog of 50, so opening more connections than that at once
@@ -31,8 +33,11 @@
 # are a floor for the hardware, not a production capacity figure.
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-SCRIPTS="$ROOT/bench/loadtest"
+# The harness (this directory) can drive another checkout: ROOT is the tree
+# built and tested, SCRIPTS always this copy of the Lua scripts. That is how
+# compare.sh runs two versions under the same harness.
+SCRIPTS=$(cd "$(dirname "$0")" && pwd)
+ROOT=${ROOT:-$(cd "$SCRIPTS/../.." && pwd)}
 WORK=${WORK:-$(mktemp -d)}
 DURATION=${DURATION:-20s}
 DPOP_DURATION=${DPOP_DURATION:-15s}
@@ -123,7 +128,12 @@ run() { # name, wrk args...
 log "work dir: $WORK"
 
 log "Building the packaged service and the token minter"
-(cd "$ROOT" && sbt --client "stage; zio/stage; bench/compile") | grep -E "error|success" | tail -2
+# Only the service under test: an older tree may not have the other module.
+case "$SERVICE" in
+  zio) BUILD="zio/stage; bench/compile" ;;
+  *) BUILD="stage; bench/compile" ;;
+esac
+(cd "$ROOT" && sbt --client "$BUILD") | grep -E "error|success" | tail -2
 
 # `stage` writes to target/out/jvm/scala-*/auth-middleware/universal/stage on
 # sbt 2 and target/universal/stage on sbt 1. Take the newest, so a stale tree

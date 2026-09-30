@@ -244,4 +244,8 @@ enum Cnf derives CanEqual {
 type Role = Role.T
 object Role extends RefinedType[String, NonBlank]
 
+// The customer (tenant) a token was issued for, from the `tenant` claim.
+type TenantId = TenantId.T
+object TenantId extends RefinedType[String, NonBlank & MaxLength[128]]
+
 val user = Role("user")

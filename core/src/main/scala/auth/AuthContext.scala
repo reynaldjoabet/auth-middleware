@@ -66,6 +66,13 @@ final case class AuthContext(
   def hasRole(role: Role): Boolean = roles.contains(role)
 
   /**
+    * The `tenant` claim: the customer this token was issued for, in a multi-tenant deployment.
+    * `None` when absent or blank.
+    */
+  lazy val tenant: Option[TenantId] =
+    Option(claims.getClaim("tenant")).collect { case s: String => s }.flatMap(TenantId.option)
+
+  /**
     * The `iat` claim: when the token was issued. Compared against subject-wide revocations, which
     * reject every token a subject was issued before a cut-off.
     */

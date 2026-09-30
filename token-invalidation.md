@@ -1,3 +1,255 @@
+# Token Invalidation
+
+```json
+{
+  "iss": "https://sts.com",
+  "sub": "user-12345",
+  "aud": "payroll-api",
+  "iat": 1760000000,
+  "nbf": 1760000000,
+  "exp": 1760001800,
+  "jti": "8e8b3d1e-...",
+  "tenant": "customer-123",
+  "roles": [
+    "PayrollAdmin",
+    "Manager"
+  ],
+  "scp": [
+    "payroll.read",
+    "payroll.write"
+  ]
+}
+```
+
+## Claims contract
+
+What each claim is for, and what the API does when it is wrong or missing:
+
+| Claim | Required | Used for | When wrong or missing |
+|---|---|---|---|
+| `iss` | yes | Exact match against the trusted issuer | `401 invalid_token` |
+| `aud` | yes | Must contain this API's identifier (`payroll-api`) | `401 invalid_token` |
+| `sub` | yes | Who the caller is; key for subject-wide invalidation | `401 invalid_token` |
+| `iat` | yes | Compared with subject invalidation cut-offs | `401 invalid_token`; also treated as revoked by any cut-off for its subject |
+| `nbf` | no | Not accepted before this time (30 s clock skew) | `401 invalid_token` |
+| `exp` | yes | Normal expiry | `401 invalid_token` |
+| `jti` | yes | Invalidating one specific token | `401 invalid_token`, so no token can dodge the invalidation check |
+| `client_id` | yes | Which application is calling; tells user tokens from machine tokens | `401 invalid_token` |
+| `tenant` | on tenant-scoped routes | Keeping a caller inside its own tenant | `403 access_denied` |
+| `roles` | no | Level 1 authorization (user's role assignments) | Treated as no roles |
+| `scp` / `scope` | no | Level 1 authorization (what the client may do on the user's behalf) | Treated as no scopes |
+
+`scp` may be a JSON array, as above, or a space-separated `scope` string (RFC 9068). Both are read.
+
+## Roles
+
+The roles claim represents coarse-grained authorization roles applicable to the token.
+
+```json
+"roles": [
+  "PayrollAdmin",
+  "Manager"
+]
+```
+
+Roles should be:
+- Stable enough to remain useful for the lifetime of the token.
+- Limited in number to avoid excessive token size.
+- Consistent across consumers.
+- Documented as part of the DFID token contract.
+- Free of detailed record-level authorization information.
+
+A role in a token is a snapshot from when it was issued. When a role is removed, tokens already issued keep it until they are invalidated (see [Role Changes](#role-changes)) or until the API asks IAM directly ([Level 2](#level-2-dynamic-authorization)).
+
+### Roles and scopes answer different questions
+
+- **`roles`: what the user is.** Their assignments in IAM, such as `PayrollAdmin`.
+- **`scp`: what the client application may do on the user's behalf.** The user consented to these, or the application was granted them.
+
+A scope does not give a user anything they don't already have. It only limits what the application can do in their name. So for a token that acts for a user, "role OR scope" lets **any application granted `payroll.read` read payroll for any user, whatever their role**. That is usually right only for machine (`client_credentials`) tokens, which have no user and no roles.
+
+For user tokens, require both by nesting the checks:
+
+```scala
+// The user must be a PayrollAdmin AND the application must hold payroll.read.
+AccessTokenAuth.requireScopes(Set(ScopeToken("payroll.read")))(
+  AccessTokenAuth.requireAny(roles = Set(Role("PayrollAdmin")))(payrollRoutes)
+)
+```
+
+## jti
+
+A unique `jti` claim is required for access tokens participating in the invalidation model.
+
+```json
+"jti": "8e8b3d1e-5ef8-4de8-9f17-..."
+```
+
+The `jti` identifies one specific token for invalidation. That is better than identifying a token by its full JWT value, which is long, and which would put a usable credential into every log line and event that names it.
+
+`jti` is in the required claims by default. If it were optional, a token without one would skip the per-token invalidation check.
+
+## exp
+
+The `exp` claim remains the normal expiration mechanism. Token expiration is still required even when invalidation is introduced. Invalidation doesn't replace a short token lifetime; it covers the time between an event and `exp`. The shorter the lifetime, the less there is to invalidate and the smaller each API's invalidation store.
+
+The security model becomes:
+
+```text
+Token is valid if:
+    signature is valid
+AND issuer is trusted
+AND audience is correct
+AND token is within nbf/exp
+AND token has not been invalidated
+```
+
+In the order the middleware checks them, with what each failure returns:
+
+| # | Check | Failure |
+|---|---|---|
+| 1 | One `Authorization` header, Bearer or DPoP, no token in the query string | `400 invalid_request` or `401` |
+| 2 | Length at most 8 KB; compact JWS with 3 parts | `401 invalid_token` |
+| 3 | `typ` is `at+jwt` (or `JWT`); `alg` is an allowed asymmetric algorithm (RS256, PS256, ES256; never HMAC or `none`) | `401 invalid_token` |
+| 4 | Signature against the issuer's JWKS (cached; refreshed on an unknown `kid`) | `401 invalid_token`; `503` if the keys can't be fetched |
+| 5 | `iss` exact, `aud` contains this API, `exp`/`nbf`/`iat` within 30 s skew, required claims present | `401 invalid_token` |
+| 6 | Not invalidated: `jti` not revoked, `iat` after the subject's cut-off | `401 invalid_token`; `503` if the invalidation store can't vouch for its answer |
+| 7 | Sender constraint, if the token has `cnf`: DPoP proof or mTLS certificate matches | `401` |
+| 8 | Level 1, then Level 2 authorization (below) | `403`; `503` if IAM can't answer |
+
+## Authorization Model
+
+The architecture should explicitly separate authorization into two levels.
+
+```mermaid
+flowchart LR
+    req(["Request + validated token"]) --> L1
+
+    subgraph L1["Level 1 · coarse · from the token, no network"]
+        direction TB
+        tenant["requireTenant<br/>token tenant = path tenant"]
+        rs["requireAny / requireScopes<br/>roles · scp"]
+        tenant --> rs
+    end
+
+    subgraph L2["Level 2 · dynamic · asks IAM"]
+        direction TB
+        pdp["requirePermission<br/>AuthZEN POST /access/v1/evaluation<br/>subject · action · resource"]
+        cache[("decision cache<br/>a few seconds")]
+        pdp <--> cache
+    end
+
+    subgraph R["Response"]
+        direction TB
+        route["200 → route handler"]
+        scope["403 insufficient_scope"]
+        denied["403 access_denied"]
+        unavailable["503 fail closed"]
+    end
+
+    L1 -- "allowed" --> L2
+    L2 -- "decision: true" --> route
+    L1 -- "no role or scope" --> scope
+    L1 -- "wrong tenant" --> denied
+    L2 -- "decision: false" --> denied
+    L2 -- "IAM unreachable / slow" --> unavailable
+```
+
+### Level 1: Coarse-grained authorization
+
+The receiving API validates the token and evaluates claims such as:
+
+```text
+roles
+scp
+tenant
+audience
+issuer
+```
+
+This level answers questions such as "Is this caller allowed to invoke this API operation at all?":
+
+```http
+POST /payroll/run
+Required:
+    role = PayrollAdmin
+```
+
+The service can make this decision without a synchronous call to Identity and Access Management.
+
+In this service:
+
+- **Roles and scopes:** `requireAny(roles, scopes)` for "any of", `requireScopes(scopes)` for "all of". Nest them for "role AND scope". A valid token that fails gets `403 insufficient_scope`.
+- **Tenant:** `requireTenant(tenantOf)` compares the token's `tenant` with the tenant the request targets (for example the `{tenant}` in `/tenants/{tenant}/payroll`). A mismatch, or a token with no tenant, gets `403 access_denied`, before anything else runs. This check stops a valid token for customer A from reading customer B's data.
+
+### Level 2: Dynamic authorization
+
+Identity and Access Management (IAM) should be consulted when the decision depends on current state or resource-specific policy.
+
+Examples:
+
+- Can user access Employee 123?
+- Can user access employees in Collection X?
+- Can Manager update this specific employee?
+- Does the user's current role have access to this feature?
+- Does a policy allow access to this resource?
+
+The conceptual model is:
+
+```text
+JWT
+ |
+ +-- Identity
+ +-- Tenant
+ +-- Roles
+ +-- Scopes
+ |
+ +--> Coarse authorization
+
+Access Management
+ |
+ +-- Feature access
+ +-- Collection access
+ +-- Record access
+ +-- Dynamic policy
+ |
+ +--> Fine-grained authorization
+```
+
+In this service, `requirePermission(evaluator, action, resourceOf)` asks IAM's policy decision point (PDP). The request uses the OpenID **AuthZEN** Authorization API, so any conformant PDP can answer it:
+
+```http
+POST https://iam.example/access/v1/evaluation
+Authorization: Bearer <PDP credential>
+
+{
+  "subject":  {"type": "user", "id": "user-12345",
+               "properties": {"tenant": "customer-123", "client_id": "payroll-web"}},
+  "action":   {"name": "can_read"},
+  "resource": {"type": "employee", "id": "123"}
+}
+```
+
+```json
+{"decision": true}
+```
+
+- **Allowed:** the route runs. **Denied:** `403 access_denied`. **PDP unreachable, erroring or slower than `requestTimeout`** (2 s by default): `503`, never a guess.
+- **The token's roles are not sent.** Whether the user's roles, as they are now, allow the action is what the PDP is asked, from its own current data. This is also the answer to the role-snapshot problem for sensitive operations: a role removed in IAM takes effect on the next call, with no new token and no invalidation event.
+- **A machine token** (no user present) is sent as `{"type": "client", "id": "<client_id>"}`.
+- **Decisions are cached per identical request for `cacheTtl`** (5 s by default; `0` turns caching off). The TTL is the worst-case delay before an IAM change takes effect on a node. Errors are never cached.
+- **Put Level 2 inside Level 1**, as in the diagram. A request the token's claims already refuse then never costs an IAM call.
+
+Which level to use:
+
+| Question | Level | Cost per request |
+|---|---|---|
+| May this caller use this API or operation at all? | 1 | None: claims already in memory |
+| Is the caller in the right tenant? | 1 | None |
+| May this user see this record, or this collection? | 2 | One PDP call (or a cache hit) |
+| Does the user's role, as it is **now**, allow this? | 2 | One PDP call (or a cache hit) |
+
+The two levels are complementary. Level 1 with [invalidation](#consumer-invalidation-workflow) keeps most requests free of any network call and still revokes within about a second. Level 2 is for the decisions a token can't carry.
 
 ### example endpoint
 ```http
@@ -260,7 +512,9 @@ Topic retention must be at least the longest access-token lifetime. Compaction o
 | Piece | Where |
 |---|---|
 | Role OR scope policy (`403` when neither) | `AccessTokenAuth.requireAny(roles, scopes)` |
-| Roles and `iat` on the context | `AuthContext.roles`, `AuthContext.issuedAt` (the `roles` claim) |
+| Roles, tenant and `iat` on the context | `AuthContext.roles`, `AuthContext.tenant`, `AuthContext.issuedAt` |
+| Tenant isolation (`403 access_denied`) | `AccessTokenAuth.requireTenant(tenantOf)` |
+| Level 2: ask IAM's PDP (AuthZEN), cached, fail closed | `AccessTokenAuth.requirePermission(evaluator, action, resourceOf)`, `auth.authorization.AccessEvaluator.authZen` |
 | Local store (`jti` and subject cut-offs, readiness, staleness) | `auth.revocation.InvalidationStore` |
 | Kafka consumer | `app.infra.kafka.KafkaInvalidations` |
 | Publisher for the STS side | `app.infra.kafka.InvalidationPublisher` |

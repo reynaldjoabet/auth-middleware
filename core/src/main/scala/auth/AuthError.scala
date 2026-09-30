@@ -68,6 +68,14 @@ enum AuthError derives CanEqual {
   )
 
   /**
+    * The token is valid and its claims allow the route, but the request is outside what the caller
+    * may do: another tenant's data, or a policy decision point said no to this action on this
+    * resource. `403` with `access_denied`. Unlike [[InsufficientScope]], no other token of the same
+    * kind would help, so the challenge offers nothing to request.
+    */
+  case AccessDenied
+
+  /**
     * Validation could not be performed at all (for example the JWKS endpoint was unreachable and no
     * cached keys were available). The middleware fails closed and answers 503 rather than guessing.
     */

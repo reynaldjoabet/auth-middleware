@@ -21,6 +21,7 @@ private[auth] def outcomeCode(error: AuthError): String =
     case _: AuthError.InsufficientScope              => "insufficient_scope"
     case _: AuthError.InsufficientUserAuthentication =>
       "insufficient_user_authentication"
+    case AuthError.AccessDenied          => "access_denied"
     case AuthError.ValidationUnavailable => "validation_unavailable"
   }
 

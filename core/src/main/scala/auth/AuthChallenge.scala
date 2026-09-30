@@ -59,6 +59,16 @@ object AuthChallenge {
           body = Some(("use_dpop_nonce", description))
         )
         c.copy(headers = c.headers :+ ("DPoP-Nonce" -> (nonce.value: String)))
+      case AuthError.AccessDenied =>
+        // Nothing the client can request would change the answer, so no
+        // WWW-Authenticate: the response is a plain refusal.
+        AuthChallenge(
+          403,
+          List(NoStore),
+          Some(
+            """{"error":"access_denied","error_description":"the caller may not perform this action on this resource"}"""
+          )
+        )
       case AuthError.InsufficientScope(required) if required.isEmpty =>
         // A role-only policy: nothing a client could request, and role names
         // are not disclosed, so the challenge carries no scope parameter.

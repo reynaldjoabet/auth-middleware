@@ -2,10 +2,10 @@ package auth
 
 import cats.{Monad, MonadThrow}
 import cats.data.{EitherT, Kleisli, OptionT}
-import cats.effect.Clock
+import cats.effect.{Clock, Sync}
 import cats.syntax.all.*
 
-import org.http4s.{AuthedRoutes, Header, MediaType, Request, Response, Status}
+import org.http4s.{AuthedRequest, AuthedRoutes, Header, MediaType, Request, Response, Status}
 import org.http4s.headers.{`Content-Type`, Authorization}
 import org.http4s.server.AuthMiddleware
 import org.typelevel.ci.*
@@ -296,6 +296,56 @@ object AccessTokenAuth {
         )
     }
   }
+
+  /**
+    * Keep a caller inside its own tenant. `tenantOf` names the tenant a request targets (usually
+    * from the path, e.g. `/tenants/{tenant}/payroll`); the token's `tenant` claim must equal it, or
+    * the answer is `403 access_denied`. A token without a `tenant` claim is refused on any
+    * tenant-scoped request. When `tenantOf` returns `None` the request is not tenant-scoped and
+    * passes.
+    */
+  def requireTenant[F[_]: Monad](
+      tenantOf: AuthedRequest[F, AuthContext] => Option[String],
+      realm: String = "api"
+  )(routes: AuthedRoutes[AuthContext, F]): AuthedRoutes[AuthContext, F] =
+    Kleisli { req =>
+      tenantOf(req) match {
+        case None                                                         => routes(req)
+        case Some(target) if req.context.tenant.exists(_.value == target) => routes(req)
+        case Some(_)                                                      => OptionT.pure[F](errorResponse(AuthError.AccessDenied, realm, None))
+      }
+    }
+
+  /**
+    * Level 2 authorization: ask the policy decision point whether this caller may perform `action`
+    * on the resource `resourceOf` names (see [[authorization.AccessEvaluator]]).
+    *
+    *   - allowed: the routes run
+    *   - denied: `403 access_denied`
+    *   - the PDP cannot answer (unreachable, error, too slow): `503`, never a guess
+    *
+    * Put it inside the claim-based checks (`requireAny`, `requireScopes`, `requireTenant`), so a
+    * request those already refuse costs no PDP call.
+    */
+  def requirePermission[F[_]: Sync](
+      evaluator: authorization.AccessEvaluator[F],
+      action: String,
+      resourceOf: AuthedRequest[F, AuthContext] => authorization.AuthZen.Resource,
+      realm: String = "api"
+  )(routes: AuthedRoutes[AuthContext, F]): AuthedRoutes[AuthContext, F] =
+    Kleisli { req =>
+      val request = authorization.AuthZen.Request(
+        subject = authorization.AuthZen.subjectOf(req.context),
+        action = authorization.AuthZen.Action(action),
+        resource = resourceOf(req)
+      )
+      OptionT(evaluator.evaluate(request).attempt.flatMap {
+        case Right(true)  => routes(req).value
+        case Right(false) => errorResponse[F](AuthError.AccessDenied, realm, None).some.pure[F]
+        case Left(_)      =>
+          errorResponse[F](AuthError.ValidationUnavailable, realm, None).some.pure[F]
+      })
+    }
 
   /**
     * Require that an end user is present on the token — i.e. reject machine-to-machine

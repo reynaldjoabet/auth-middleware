@@ -59,6 +59,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    # For PostgresStoresSpec, which is skipped when TEST_POSTGRES_PORT is unset.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: auth
+          POSTGRES_PASSWORD: auth
+          POSTGRES_DB: auth
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U auth"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_POSTGRES_PORT: '5432'
+      TEST_POSTGRES_PASSWORD: auth
+
     strategy:
       fail-fast: false
       matrix:

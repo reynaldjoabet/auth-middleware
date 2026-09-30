@@ -10,10 +10,9 @@ import org.http4s.server.Server as Http4sServer
 import org.slf4j.LoggerFactory
 import org.typelevel.otel4s.oteljava.OtelJava
 import org.typelevel.otel4s.trace.Tracer
-import sage.backend.SageClient
 import app.config.{AppConfig, AppConfigLoader}
 import app.http.Server
-import app.infra.redis.RedisTokenDenylist
+import app.infra.SharedStores
 
 object Main extends IOApp.Simple {
 
@@ -22,12 +21,12 @@ object Main extends IOApp.Simple {
   protected override def runtimeConfig: IORuntimeConfig =
     super.runtimeConfig.copy(cpuStarvationCheckInterval = 10.seconds)
 
-  // The whole app as one Resource: Redis client → DB pool → token validator →
-  // Ember, released in reverse on SIGTERM.
+  // The whole app as one Resource: revocation store (Redis or Postgres) → DB
+  // pool → token validator → Ember, released in reverse on SIGTERM.
   private def app(cfg: AppConfig): Resource[IO, Http4sServer] =
     for {
-      redis   <- SageClient.resource(cfg.redis.toSageConfig)
-      denylist = RedisTokenDenylist[IO](redis, cfg.redis.commandTimeout)
+      stores  <- SharedStores.resource(cfg)
+      denylist = stores.denylist
       // GlobalOpenTelemetry, autoconfigured via the
       // -Dotel.java.global-autoconfigure.enabled=true javaOption; noop when no
       // exporter is configured, so local runs cost nothing.
@@ -48,7 +47,7 @@ object Main extends IOApp.Simple {
                   .create
               )
       // No jti/nonce override: single node uses the in-memory jti checker and
-      // config-driven stateless nonces. Redis here backs only revocation.
+      // config-driven stateless nonces. The shared store backs only revocation.
       server <- Server.resource[IO](cfg, denylist, events, telemetry, onShed = Some(shed.inc()))
     } yield server
 

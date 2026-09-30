@@ -26,7 +26,63 @@ final case class AppConfig(
     http: HttpServerConfig,
     db: DbConfig,
     auth: AuthSettings,
-    redis: RedisSettings
+    redis: RedisSettings,
+    store: StoreSettings
+) derives ConfigReader
+
+/**
+  * Where the shared auth state lives: the revocation denylist, the DPoP proof `jti` set and
+  * single-use DPoP nonces.
+  *
+  * @param backend
+  *   `redis` (the `redis` block) or `postgres` (the `db` database, through its own Skunk sessions;
+  *   see [[app.infra.postgres.PostgresStores]])
+  */
+final case class StoreSettings(
+    backend: StoreBackend,
+    postgres: PostgresStoreSettings
+) derives ConfigReader
+
+enum StoreBackend derives CanEqual {
+  case Redis, Postgres
+}
+
+object StoreBackend {
+
+  // Plain strings in the config (`backend = postgres`), hence the enumeration form.
+  given ConfigReader[StoreBackend] =
+    _root_.pureconfig.generic.semiauto.deriveEnumerationReader
+
+}
+
+/**
+  * The Postgres store's sessions; connection details come from `db`.
+  *
+  * @param sessions
+  *   connections held open for the stores, separate from the HikariCP pool. Each runs one statement
+  *   at a time, so this caps concurrent store round trips per node.
+  * @param commandTimeout
+  *   upper bound on one store call, waiting for a session included; past it the request fails
+  *   closed with `503`. Also sent as the sessions' `statement_timeout`, so Postgres abandons the
+  *   statement too.
+  * @param synchronousCommit
+  *   `false` acknowledges a write before its WAL record reaches disk. A crash can then lose the
+  *   last few hundred milliseconds of spent `jti`s and nonces; it cannot corrupt anything.
+  * @param maxBatch
+  *   calls of one kind answered by a single statement at most (see [[app.infra.postgres.Batcher]]);
+  *   `1` turns batching off
+  * @param sweepInterval
+  *   how often expired rows are deleted (each node sweeps; `SKIP LOCKED` keeps them apart)
+  * @param sweepBatch
+  *   rows deleted per statement while sweeping, so no sweep holds locks for long
+  */
+final case class PostgresStoreSettings(
+    sessions: Int :| Positive,
+    commandTimeout: FiniteDuration,
+    synchronousCommit: Boolean,
+    maxBatch: Int :| Positive,
+    sweepInterval: FiniteDuration,
+    sweepBatch: Int :| Positive
 ) derives ConfigReader
 
 /**

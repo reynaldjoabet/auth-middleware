@@ -66,6 +66,17 @@ class AppConfigSpec extends FunSuite {
             ping-timeout = 30 seconds
             command-timeout = 250 milliseconds
           }
+          store {
+            backend = postgres
+            postgres {
+              sessions = 16
+              command-timeout = 250 milliseconds
+              synchronous-commit = false
+              max-batch = 256
+              sweep-interval = 30 seconds
+              sweep-batch = 1000
+            }
+          }
         }
       """)
       .at("app")
@@ -84,6 +95,7 @@ class AppConfigSpec extends FunSuite {
     assert(cfg.auth.dpop.nonce.decodedKey.isDefined)
     assertEquals(cfg.auth.dpop.nonce.decodedPreviousKeys, Nil)
     assertEquals(cfg.auth.introspection.toIntrospectionConfig, None)
+    assertEquals(cfg.store.backend, StoreBackend.Postgres)
   }
 
   test(

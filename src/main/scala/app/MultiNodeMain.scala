@@ -11,10 +11,9 @@ import org.http4s.server.Server as Http4sServer
 import org.slf4j.LoggerFactory
 import org.typelevel.otel4s.oteljava.OtelJava
 import org.typelevel.otel4s.trace.Tracer
-import sage.backend.SageClient
 import app.config.{AppConfig, AppConfigLoader, DpopNonceMode}
 import app.http.Server
-import app.infra.redis.{RedisDpopJtiStore, RedisDpopNonceStore, RedisTokenDenylist}
+import app.infra.SharedStores
 
 /**
   * Composition root for a **multi-node, load-balanced** deployment (the FAPI 2.0 production
@@ -105,11 +104,12 @@ object MultiNodeMain extends IOApp.Simple {
 
   private def app(cfg: AppConfig): Resource[IO, Http4sServer] =
     for {
-      // One shared Redis/Valkey client, reused for every distributed store.
-      redis <- SageClient.resource(cfg.redis.toSageConfig)
+      // The shared auth state, in Redis or Postgres per `app.store.backend`:
+      // one client (or session set) reused for every distributed store.
+      stores <- SharedStores.resource(cfg)
 
       // Distributed revocation: reject a revoked jti on every node at once.
-      denylist = RedisTokenDenylist[IO](redis, cfg.redis.commandTimeout)
+      denylist = stores.denylist
 
       // Replay defence, per `auth.dpop.nonce.mode` (only when DPoP is on):
       //   stateless — shared-key nonces (built by Server) + a shared Redis set
@@ -119,16 +119,10 @@ object MultiNodeMain extends IOApp.Simple {
       dpopDisabled = !cfg.auth.dpop.enabled
       redisNonces  = cfg.auth.dpop.nonce.enabled &&
                       cfg.auth.dpop.nonce.mode == DpopNonceMode.Redis
-      jtiStore = Option.when(!dpopDisabled && !redisNonces)(
-                   RedisDpopJtiStore[IO](redis, cfg.redis.commandTimeout)
-                 )
+      jtiStore      = Option.when(!dpopDisabled && !redisNonces)(stores.jtis)
       nonceOverride = Option.when(!dpopDisabled && redisNonces)(
                         DpopNonceValidator.fromStore[IO](
-                          new RedisDpopNonceStore[IO](
-                            redis,
-                            cfg.redis.commandTimeout,
-                            cfg.auth.dpop.nonce.lifetime
-                          )
+                          stores.nonces(cfg.auth.dpop.nonce.lifetime)
                         )
                       )
 
@@ -174,10 +168,10 @@ object MultiNodeMain extends IOApp.Simple {
       // bad config fails before we get here.
       IO(
         log.info(
-          "Multi-node start: http={}, db={}, redis={} node(s)",
+          "Multi-node start: http={}, db={}, shared state in {}",
           cfg.http,
           cfg.db.jdbcUrl,
-          cfg.redis.nodes.size
+          cfg.store.backend
         )
       ) *>
         app(cfg).use { server =>

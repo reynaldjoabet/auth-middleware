@@ -7,12 +7,14 @@ import fs2.io.net.Network
 import auth.{AccessTokenAuth, AuthEvents, AuthTelemetry}
 import auth.accesstoken.AccessTokenValidator
 import auth.dpop.{DpopConfig, DpopJtiStore, DpopNonceValidator, DpopVerifier}
+import auth.mtls.ClientCertificates
 import auth.revocation.{TokenDenylist, TokenIntrospection}
 import org.http4s.ember.client.EmberClientBuilder
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.server.middleware.Timeout
 import org.http4s.server.Server as Http4sServer
 import org.slf4j.LoggerFactory
+import org.typelevel.ci.CIString
 import app.config.AppConfig
 import app.infra.postgres.Database
 import org.typelevel.otel4s.trace.Tracer
@@ -135,7 +137,13 @@ object Server {
 
       authMw =
         AccessTokenAuth
-          .middleware[F](validator, events, dpopVerifier = dpopVerifier)
+          .middleware[F](
+            validator,
+            events,
+            dpopVerifier = dpopVerifier,
+            clientCertificates = cfg.auth.mtlsForwardedCertHeader
+              .map(header => ClientCertificates.fromForwardedHeader[F](CIString(header)))
+          )
       // Shedding is outermost so an overloaded node spends almost nothing on
       // a request it will refuse; the timeout bounds everything beneath it.
       httpApp <- Resource.eval(

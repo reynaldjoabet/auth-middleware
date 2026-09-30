@@ -87,7 +87,8 @@ final case class AuthSettings(
     jwksUri: String :| HttpsUriNoFragment,
     dpop: DpopSettings,
     introspection: IntrospectionSettings,
-    cache: AuthCacheSettings
+    cache: AuthCacheSettings,
+    mtlsForwardedCertHeader: Option[String :| NonBlank]
 ) derives ConfigReader {
 
   def toAccessTokenConfig: AccessTokenConfig =
@@ -137,6 +138,7 @@ final case class DpopSettings(
   */
 final case class DpopNonceSettings(
     enabled: Boolean,
+    mode: DpopNonceMode,
     key: Option[Secret],
     previousKeys: List[Secret],
     lifetime: FiniteDuration
@@ -148,6 +150,29 @@ final case class DpopNonceSettings(
 
   private def decode(base64: Secret): SecretKey =
     DpopNonceValidator.keyFromBytes(Base64.getDecoder.decode(base64.value))
+
+}
+
+/**
+  * Where DPoP replay-defence state lives in a multi-node deployment ([[app.MultiNodeMain]]).
+  *
+  *   - `Stateless`: nonces are AES-GCM-sealed timestamps any node can check with the shared key,
+  *     reusable within their lifetime; replay is anchored by a shared Redis set of spent proof
+  *     `jti`s. One Redis write per DPoP request.
+  *   - `Redis`: nonces are single-use Redis entries, consumed on use and minted for every response;
+  *     a replayed proof carries an already-consumed nonce, so no shared `jti` set is needed. Two
+  *     Redis round trips per DPoP request, and a client can have only one request in flight per
+  *     nonce.
+  */
+enum DpopNonceMode derives CanEqual {
+  case Stateless, Redis
+}
+
+object DpopNonceMode {
+
+  // Plain strings in the config (`mode = stateless`), hence the enumeration form.
+  given ConfigReader[DpopNonceMode] =
+    _root_.pureconfig.generic.semiauto.deriveEnumerationReader
 
 }
 

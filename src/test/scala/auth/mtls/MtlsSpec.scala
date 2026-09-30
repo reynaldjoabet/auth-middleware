@@ -112,6 +112,25 @@ class MtlsSpec extends CatsEffectSuite {
     }
   }
 
+  test("accepts a certificate in HAProxy's forwarding format (deploy/haproxy/haproxy.cfg)") {
+    // HAProxy builds the header from the raw DER: one unwrapped base64 line,
+    // percent-encoded (+ / = included), between URL-encoded PEM armour.
+    val base64       = java.util.Base64.getEncoder.encodeToString(clientCert.getEncoded)
+    val haproxyValue =
+      "-----BEGIN%20CERTIFICATE-----%0A" +
+        base64.replace("+", "%2B").replace("/", "%2F").replace("=", "%3D") +
+        "%0A-----END%20CERTIFICATE-----%0A"
+    val token = sign(mtlsBoundClaims(x5tS256))
+    app()
+      .run(
+        Request[IO](Method.GET, uri"/accounts").putHeaders(
+          Header.Raw(ci"Authorization", s"Bearer $token"),
+          Header.Raw(ci"X-Forwarded-Client-Cert", haproxyValue)
+        )
+      )
+      .map(r => assertEquals(r.status, Status.Ok))
+  }
+
   test("an unparseable forwarded certificate fails closed") {
     val token = sign(mtlsBoundClaims(x5tS256))
     val req   = request(token, None)

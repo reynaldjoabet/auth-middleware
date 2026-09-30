@@ -6,14 +6,15 @@ import cats.effect.{IO, IOApp, Resource}
 import cats.effect.unsafe.IORuntimeConfig
 
 import auth.{AuthEvents, AuthTelemetry}
+import auth.dpop.DpopNonceValidator
 import org.http4s.server.Server as Http4sServer
 import org.slf4j.LoggerFactory
 import org.typelevel.otel4s.oteljava.OtelJava
 import org.typelevel.otel4s.trace.Tracer
 import sage.backend.SageClient
-import app.config.{AppConfig, AppConfigLoader}
+import app.config.{AppConfig, AppConfigLoader, DpopNonceMode}
 import app.http.Server
-import app.infra.redis.{RedisDpopJtiStore, RedisTokenDenylist}
+import app.infra.redis.{RedisDpopJtiStore, RedisDpopNonceStore, RedisTokenDenylist}
 
 /**
   * Composition root for a **multi-node, load-balanced** deployment (the FAPI 2.0 production
@@ -45,10 +46,10 @@ import app.infra.redis.{RedisDpopJtiStore, RedisTokenDenylist}
   *     by themselves, stop an in-window replay — the shared `jti` store does that.
   *
   * That division is the answer to "if nonces are stateless, why Redis at all?": the Redis
-  * dependency is for the `jti` single-use set, not for nonces. (The alternative posture — using a
-  * *stateful, single-use* nonce store as the anchor instead of `jti` tracking — is described under
-  * [[app.infra.redis.RedisDpopNonceStore]]; inject it via `Server`'s `nonceOverride`. It is an
-  * alternative to the shared `jti` store, not an addition, so this default does not pay for both.)
+  * dependency is for the `jti` single-use set, not for nonces. (The alternative posture — a
+  * *stateful, single-use* nonce store as the anchor instead of `jti` tracking, see
+  * [[app.infra.redis.RedisDpopNonceStore]] — is selected with `auth.dpop.nonce.mode = redis`. It
+  * replaces the shared `jti` store rather than adding to it, so neither mode pays for both.)
   *
   * ==Request flow==
   *
@@ -110,12 +111,26 @@ object MultiNodeMain extends IOApp.Simple {
       // Distributed revocation: reject a revoked jti on every node at once.
       denylist = RedisTokenDenylist[IO](redis, cfg.redis.commandTimeout)
 
-      // The cross-node replay anchor: a shared, single-use jti set. Only when
-      // DPoP is on — otherwise there is nothing to check. Nonces stay stateless
-      // (Server builds them from the shared key).
-      jtiStore = Option.when(cfg.auth.dpop.enabled)(
+      // Replay defence, per `auth.dpop.nonce.mode` (only when DPoP is on):
+      //   stateless — shared-key nonces (built by Server) + a shared Redis set
+      //               of spent proof jtis: the cross-node replay anchor.
+      //   redis     — single-use nonces in Redis: a replayed proof carries a
+      //               consumed nonce, so the per-node jti set suffices.
+      dpopDisabled = !cfg.auth.dpop.enabled
+      redisNonces  = cfg.auth.dpop.nonce.enabled &&
+                      cfg.auth.dpop.nonce.mode == DpopNonceMode.Redis
+      jtiStore = Option.when(!dpopDisabled && !redisNonces)(
                    RedisDpopJtiStore[IO](redis, cfg.redis.commandTimeout)
                  )
+      nonceOverride = Option.when(!dpopDisabled && redisNonces)(
+                        DpopNonceValidator.fromStore[IO](
+                          new RedisDpopNonceStore[IO](
+                            redis,
+                            cfg.redis.commandTimeout,
+                            cfg.auth.dpop.nonce.lifetime
+                          )
+                        )
+                      )
 
       // Logs + OpenTelemetry metrics and traces. autoconfigure is a no-op with
       // no exporter.
@@ -144,6 +159,7 @@ object MultiNodeMain extends IOApp.Simple {
                   events,
                   telemetry,
                   jtiStore = jtiStore,
+                  nonceOverride = nonceOverride,
                   onShed = Some(shed.inc())
                 )
     } yield server

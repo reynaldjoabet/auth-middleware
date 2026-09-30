@@ -72,7 +72,7 @@ class AppConfigSpec extends FunSuite {
       .loadOrThrow[AppConfig]
 
   private val dpopOn =
-    s"""dpop { enabled = true, nonce { enabled = true, key = "$testKeyB64", previous-keys = [], lifetime = 5 minutes } }"""
+    s"""dpop { enabled = true, nonce { enabled = true, mode = stateless, key = "$testKeyB64", previous-keys = [], lifetime = 5 minutes } }"""
 
   private val introspectionOff =
     """introspection { enabled = false, cache-ttl = 10 seconds, request-timeout = 2 seconds }"""
@@ -90,7 +90,7 @@ class AppConfigSpec extends FunSuite {
     "absent nonce key is allowed (ephemeral fallback is a wiring decision)"
   ) {
     val cfg = load(
-      s"""dpop { enabled = true, nonce { enabled = true, previous-keys = [], lifetime = 5 minutes } }
+      s"""dpop { enabled = true, nonce { enabled = true, mode = stateless, previous-keys = [], lifetime = 5 minutes } }
          $introspectionOff"""
     )
     assertEquals(cfg.auth.dpop.nonce.decodedKey, None)
@@ -100,7 +100,7 @@ class AppConfigSpec extends FunSuite {
     val shortKey =
       java.util.Base64.getEncoder.encodeToString(new Array[Byte](7))
     val cfg = load(
-      s"""dpop { enabled = true, nonce { enabled = true, key = "$shortKey", previous-keys = [], lifetime = 5 minutes } }
+      s"""dpop { enabled = true, nonce { enabled = true, mode = stateless, key = "$shortKey", previous-keys = [], lifetime = 5 minutes } }
          $introspectionOff"""
     )
     intercept[IllegalArgumentException](cfg.auth.dpop.nonce.decodedKey)

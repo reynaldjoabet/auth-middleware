@@ -48,7 +48,8 @@ object Server {
       telemetry: AuthTelemetry[F] = AuthTelemetry.noop[F],
       jtiStore: Option[DpopJtiStore[F]] = None,
       nonceOverride: Option[DpopNonceValidator[F]] = None,
-      onShed: Option[F[Unit]] = None
+      onShed: Option[F[Unit]] = None,
+      ready: Option[F[Boolean]] = None
   ): Resource[F, Http4sServer] =
     for {
       ds <- Database.pool[F](cfg.db)
@@ -154,7 +155,15 @@ object Server {
                    )(
                      Timeout.httpApp[F](cfg.http.requestTimeout)(
                        HttpApi
-                         .httpApp[F](draining.get.ifM(false.pure[F], Database.ping[F](ds)), authMw)
+                         .httpApp[F](
+                           draining.get.ifM(
+                             false.pure[F],
+                             // `ready` also gates on dependencies the pool
+                             // can't see, e.g. the invalidation feed.
+                             Database.ping[F](ds).ifM(ready.getOrElse(true.pure[F]), false.pure[F])
+                           ),
+                           authMw
+                         )
                      )
                    )
                  )

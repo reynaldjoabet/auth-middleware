@@ -21,7 +21,45 @@ import com.github.benmanes.caffeine.cache.Caffeine
   * with `503`, never treating an unreachable store as "not revoked".
   */
 trait TokenDenylist[F[_]] {
+
   def isRevoked(tokenId: String): F[Boolean]
+
+  /**
+    * Subject-wide revocations, if this denylist has them: every token of a subject issued before a
+    * cut-off is rejected. `None` (the default) means this denylist only knows single tokens.
+    */
+  def subjects: Option[SubjectRevocations[F]] = None
+
+}
+
+/**
+  * "Every token `subject` was issued before `t` is revoked" — one entry covers all of a user's
+  * outstanding tokens, whether or not anyone knows their `jti`s. What a role change, a password
+  * reset or "sign out everywhere" needs: the user signs in again and gets a token reflecting the
+  * change.
+  */
+trait SubjectRevocations[F[_]] {
+
+  /**
+    * The latest cut-off for `subject`, if any.
+    */
+  def revokedBefore(subject: String): F[Option[java.time.Instant]]
+
+}
+
+object SubjectRevocations {
+
+  /**
+    * Whether a token issued at `issuedAt` falls under the cut-off `before`.
+    *
+    * `iat` has whole-second precision, so a token issued in the same second as the cut-off cannot
+    * be placed before or after it; it counts as revoked. At worst a token minted just after the
+    * change is rejected once and the client fetches another. A token without `iat` is revoked too:
+    * its age cannot be shown.
+    */
+  def covers(before: java.time.Instant, issuedAt: Option[java.time.Instant]): Boolean =
+    issuedAt.forall(iat => !iat.isAfter(before.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)))
+
 }
 
 object TokenDenylist {
@@ -55,6 +93,10 @@ object TokenDenylist {
         .build[String, java.lang.Boolean]()
 
       new TokenDenylist[F] {
+        // Not cached: subject cut-offs come from a local store (see
+        // KafkaInvalidations), where a lookup is a map read.
+        override def subjects: Option[SubjectRevocations[F]] = underlying.subjects
+
         def isRevoked(tokenId: String): F[Boolean] =
           Sync[F].delay(Option(answers.getIfPresent(tokenId))).flatMap {
             case Some(revoked) => (revoked: Boolean).pure[F]

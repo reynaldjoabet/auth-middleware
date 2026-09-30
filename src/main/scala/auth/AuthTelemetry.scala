@@ -22,7 +22,7 @@ import org.typelevel.otel4s.metrics.{BucketBoundaries, Counter, Histogram, Meter
 import org.typelevel.otel4s.trace.{Span, StatusCode, Tracer}
 import org.typelevel.otel4s.Attribute
 import auth.accesstoken.AccessTokenValidator
-import auth.revocation.{TokenDenylist, TokenIntrospection}
+import auth.revocation.{SubjectRevocations, TokenDenylist, TokenIntrospection}
 
 /**
   * Latency and dependency-health instrumentation for the authentication path.
@@ -257,6 +257,8 @@ object AuthTelemetry {
 
     def instrumentDenylist(denylist: TokenDenylist[F]): TokenDenylist[F] =
       new TokenDenylist[F] {
+
+        override def subjects: Option[SubjectRevocations[F]] = denylist.subjects
 
         def isRevoked(tokenId: String): F[Boolean] =
           Tracer[F].spanBuilder("auth.denylist.check").build.use { span =>

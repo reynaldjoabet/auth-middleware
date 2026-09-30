@@ -268,6 +268,36 @@ object AccessTokenAuth {
     }
 
   /**
+    * Require at least one of `roles` or `scopes`, e.g. `requireAny(roles = Set(PayrollAdmin), scopes
+    * = Set(payroll.read))` for "PayrollAdmin OR payroll.read". A token that meets none of them is
+    * valid but not allowed here: `403 insufficient_scope`, never `401`, so the client knows a new
+    * token of the same kind will not help and does not retry.
+    *
+    * The challenge names the scopes only. Scopes are the OAuth vocabulary a client can request;
+    * role names are internal and are not disclosed to callers.
+    *
+    * At least one role or scope is required: an empty policy would reject every request, which is
+    * never what a route meant.
+    */
+  def requireAny[F[_]: Monad](
+      roles: Set[Role] = Set.empty,
+      scopes: Set[ScopeToken] = Set.empty,
+      realm: String = "api"
+  )(
+      routes: AuthedRoutes[AuthContext, F]
+  ): AuthedRoutes[AuthContext, F] = {
+    require(roles.nonEmpty || scopes.nonEmpty, "requireAny needs at least one role or scope")
+    Kleisli { req =>
+      val ctx = req.context
+      if (roles.exists(ctx.hasRole) || scopes.exists(ctx.hasScope)) routes(req)
+      else
+        OptionT.pure[F](
+          errorResponse(AuthError.InsufficientScope(scopes.map(_.value)), realm, None)
+        )
+    }
+  }
+
+  /**
     * Require that an end user is present on the token — i.e. reject machine-to-machine
     * (`client_credentials`) tokens on this route. Apply to endpoints that act on behalf of a
     * person; leave it off for service/batch endpoints, which are gated on `client_id` + scopes

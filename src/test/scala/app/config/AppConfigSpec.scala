@@ -77,6 +77,16 @@ class AppConfigSpec extends FunSuite {
               sweep-batch = 1000
             }
           }
+          revocation.kafka {
+            enabled = true
+            bootstrap-servers = "kafka:9092"
+            topic = "auth.token-invalidations"
+            max-token-lifetime = 1 hour
+            max-staleness = 30 seconds
+            freshness-check-interval = 1 second
+            retry-backoff = 2 seconds
+            properties { "security.protocol" = "SASL_SSL" }
+          }
         }
       """)
       .at("app")
@@ -96,6 +106,7 @@ class AppConfigSpec extends FunSuite {
     assertEquals(cfg.auth.dpop.nonce.decodedPreviousKeys, Nil)
     assertEquals(cfg.auth.introspection.toIntrospectionConfig, None)
     assertEquals(cfg.store.backend, StoreBackend.Postgres)
+    assertEquals(cfg.revocation.kafka.properties.keySet, Set("security.protocol"))
   }
 
   test(

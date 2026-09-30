@@ -9,7 +9,7 @@ import com.github.benmanes.caffeine.cache.Cache
 import com.nimbusds.jose.jwk.source.JWKSource
 import com.nimbusds.jose.proc.SecurityContext
 import com.nimbusds.jwt.proc.DefaultJWTProcessor
-import auth.revocation.{TokenDenylist, TokenIntrospection}
+import auth.revocation.{SubjectRevocations, TokenDenylist, TokenIntrospection}
 
 /**
   * Validates OAuth 2.0 JWT access tokens (RFC 9068 profile).
@@ -234,23 +234,36 @@ object AccessTokenValidator {
     private def checkDenylist(
         token: String,
         ctx: AuthContext
-    ): F[Either[AuthError, AuthContext]] =
-      Option(ctx.claims.getJWTID) match {
-        case None =>
-          checkIntrospection(token, ctx)
-        case Some(jti) =>
-          // A store we cannot reach proves nothing: fail closed with 503.
-          denylist.isRevoked(jti).attempt.flatMap {
-            case Right(true) =>
-              reject(AuthError.InvalidToken.Revoked, s"jti $jti is denylisted")
-            case Right(false) => checkIntrospection(token, ctx)
-            case Left(e)      =>
-              reject(
-                AuthError.ValidationUnavailable,
-                s"revocation store unavailable: ${e.getMessage}"
-              )
-          }
+    ): F[Either[AuthError, AuthContext]] = {
+      val byTokenId: F[Option[String]] =
+        Option(ctx.claims.getJWTID) match {
+          case None      => Sync[F].pure(None)
+          case Some(jti) =>
+            denylist.isRevoked(jti).map(Option.when(_)(s"jti $jti is denylisted"))
+        }
+      // Subject-wide revocation (a role change, "sign out everywhere"): covers
+      // this token if it was issued before the subject's cut-off.
+      val bySubject: F[Option[String]] =
+        denylist.subjects match {
+          case None           => Sync[F].pure(None)
+          case Some(subjects) =>
+            subjects.revokedBefore(ctx.subject.value).map {
+              case Some(before) if SubjectRevocations.covers(before, ctx.issuedAt) =>
+                Some(s"tokens of subject ${ctx.subject} issued before $before are revoked")
+              case _ => None
+            }
+        }
+      // A store we cannot reach proves nothing: fail closed with 503.
+      (byTokenId, bySubject).mapN(_.orElse(_)).attempt.flatMap {
+        case Right(Some(detail)) => reject(AuthError.InvalidToken.Revoked, detail)
+        case Right(None)         => checkIntrospection(token, ctx)
+        case Left(e)             =>
+          reject(
+            AuthError.ValidationUnavailable,
+            s"revocation store unavailable: ${e.getMessage}"
+          )
       }
+    }
 
     // RFC 7662 revocation check against the AS (the Duende `introspect` flag):
     // last, because it is the only step that costs a network hop. Inactive →

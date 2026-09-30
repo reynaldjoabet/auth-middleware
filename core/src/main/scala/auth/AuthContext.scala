@@ -2,6 +2,8 @@ package auth
 
 import java.time.Instant
 
+import scala.jdk.CollectionConverters.*
+
 import com.nimbusds.jwt.JWTClaimsSet
 import io.github.iltotore.iron.*
 
@@ -52,6 +54,24 @@ final case class AuthContext(
   def hasScope(scope: ScopeToken): Boolean = scopes.contains(scope)
 
   /**
+    * Roles from the `roles` claim: a JSON array of strings, as Entra ID and most custom token
+    * services issue it (a single string is read as one role). Blank entries are dropped. Parsed on
+    * first use, so a context cached by the verified-token cache parses them once.
+    *
+    * A role in a token is a snapshot from when it was issued: removing the role from the user does
+    * not remove it from tokens already out. See `auth.revocation.TokenInvalidation.Subject`.
+    */
+  lazy val roles: Set[Role] = AuthContext.rolesOf(claims)
+
+  def hasRole(role: Role): Boolean = roles.contains(role)
+
+  /**
+    * The `iat` claim: when the token was issued. Compared against subject-wide revocations, which
+    * reject every token a subject was issued before a cut-off.
+    */
+  lazy val issuedAt: Option[Instant] = Option(claims.getIssueTime).map(_.toInstant)
+
+  /**
     * True when the token is sender-constrained via DPoP or mTLS (carries a `cnf` binding).
     */
   def isSenderConstrained: Boolean = confirmation.isDefined
@@ -66,6 +86,13 @@ final case class AuthContext(
 }
 
 object AuthContext {
+
+  private def rolesOf(claims: JWTClaimsSet): Set[Role] =
+    (claims.getClaim("roles") match {
+      case list: java.util.List[?] => list.asScala.collect { case s: String => s }.toList
+      case single: String          => List(single)
+      case _                       => Nil
+    }).flatMap(Role.option).toSet
 
   /**
     * Default "is an end user present?" test used by `AccessTokenAuth.requireUser`.

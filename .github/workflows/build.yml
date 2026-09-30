@@ -75,9 +75,22 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      # For KafkaInvalidationsSpec, skipped when TEST_KAFKA_BOOTSTRAP is unset.
+      # The image's defaults are a single KRaft node advertising localhost:9092.
+      kafka:
+        image: apache/kafka:4.1.0
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 20
+
     env:
       TEST_POSTGRES_PORT: '5432'
       TEST_POSTGRES_PASSWORD: auth
+      TEST_KAFKA_BOOTSTRAP: localhost:9092
 
     strategy:
       fail-fast: false

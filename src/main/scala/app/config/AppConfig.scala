@@ -27,8 +27,54 @@ final case class AppConfig(
     db: DbConfig,
     auth: AuthSettings,
     redis: RedisSettings,
-    store: StoreSettings
+    store: StoreSettings,
+    revocation: RevocationSettings
 ) derives ConfigReader
+
+/**
+  * Where token revocations come from besides the shared store.
+  */
+final case class RevocationSettings(kafka: KafkaInvalidationSettings) derives ConfigReader
+
+/**
+  * Token invalidations published by the token service on a Kafka topic, applied by every node to a
+  * local copy ([[app.infra.kafka.KafkaInvalidations]]). When enabled, revocation checks read that
+  * copy instead of the shared store's denylist: no network hop per request, and no per-node
+  * revocation cache (`auth.cache.revocation-ttl` is ignored).
+  *
+  * @param maxTokenLifetime
+  *   the longest access-token lifetime the token service issues. On start a node replays the topic
+  *   from this long ago, which covers every revocation that can still matter; the topic's retention
+  *   must be at least this long.
+  * @param maxStaleness
+  *   how long the node's copy may go without being confirmed current before revocation checks fail
+  *   closed with `503`
+  * @param freshnessCheckInterval
+  *   how often the node compares what it has applied with the topic's end offsets
+  * @param retryBackoff
+  *   wait before reconnecting after the consumer fails
+  * @param properties
+  *   passed to the Kafka client as-is (`"security.protocol"`, `"sasl.jaas.config"`, …). Quote the
+  *   keys, or HOCON reads the dots as nesting. Values are [[Secret]]s, so they never show in logs.
+  */
+final case class KafkaInvalidationSettings(
+    enabled: Boolean,
+    bootstrapServers: String :| Not[Blank],
+    topic: String :| Not[Blank],
+    maxTokenLifetime: FiniteDuration,
+    maxStaleness: FiniteDuration,
+    freshnessCheckInterval: FiniteDuration,
+    retryBackoff: FiniteDuration,
+    properties: Map[String, Secret]
+) derives ConfigReader {
+
+  require(
+    freshnessCheckInterval < maxStaleness,
+    "revocation.kafka: freshness-check-interval must be shorter than max-staleness, " +
+      "or a healthy feed would read as stale between checks"
+  )
+
+}
 
 /**
   * Where the shared auth state lives: the revocation denylist, the DPoP proof `jti` set and

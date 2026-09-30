@@ -13,7 +13,7 @@ import org.typelevel.otel4s.oteljava.OtelJava
 import org.typelevel.otel4s.trace.Tracer
 import app.config.{AppConfig, AppConfigLoader, DpopNonceMode}
 import app.http.Server
-import app.infra.SharedStores
+import app.infra.{Invalidations, SharedStores}
 
 /**
   * Composition root for a **multi-node, load-balanced** deployment (the FAPI 2.0 production
@@ -108,8 +108,11 @@ object MultiNodeMain extends IOApp.Simple {
       // one client (or session set) reused for every distributed store.
       stores <- SharedStores.resource(cfg)
 
-      // Distributed revocation: reject a revoked jti on every node at once.
-      denylist = stores.denylist
+      // Distributed revocation: reject a revoked jti on every node at once —
+      // from the shared store, or, with revocation.kafka enabled, from this
+      // node's copy of the token service's invalidation feed.
+      invalidations <- Invalidations.resource(cfg)
+      denylist       = invalidations.fold(stores.denylist)(identity)
 
       // Replay defence, per `auth.dpop.nonce.mode` (only when DPoP is on):
       //   stateless — shared-key nonces (built by Server) + a shared Redis set
@@ -148,13 +151,14 @@ object MultiNodeMain extends IOApp.Simple {
               )
 
       server <- Server.resource[IO](
-                  cfg,
+                  Invalidations.adjust(cfg),
                   denylist,
                   events,
                   telemetry,
                   jtiStore = jtiStore,
                   nonceOverride = nonceOverride,
-                  onShed = Some(shed.inc())
+                  onShed = Some(shed.inc()),
+                  ready = invalidations.map(_.ready)
                 )
     } yield server
 

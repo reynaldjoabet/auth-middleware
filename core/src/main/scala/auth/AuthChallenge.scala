@@ -59,6 +59,14 @@ object AuthChallenge {
           body = Some(("use_dpop_nonce", description))
         )
         c.copy(headers = c.headers :+ ("DPoP-Nonce" -> (nonce.value: String)))
+      case AuthError.InsufficientScope(required) if required.isEmpty =>
+        // A role-only policy: nothing a client could request, and role names
+        // are not disclosed, so the challenge carries no scope parameter.
+        challenge(
+          403,
+          bearer(""", error="insufficient_scope""""),
+          body = Some(("insufficient_scope", "the token does not grant access to this resource"))
+        )
       case AuthError.InsufficientScope(required) =>
         val scope = required.toSeq.sorted.mkString(" ")
         challenge(

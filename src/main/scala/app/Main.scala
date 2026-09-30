@@ -12,7 +12,7 @@ import org.typelevel.otel4s.oteljava.OtelJava
 import org.typelevel.otel4s.trace.Tracer
 import app.config.{AppConfig, AppConfigLoader}
 import app.http.Server
-import app.infra.SharedStores
+import app.infra.{Invalidations, SharedStores}
 
 object Main extends IOApp.Simple {
 
@@ -25,8 +25,9 @@ object Main extends IOApp.Simple {
   // pool → token validator → Ember, released in reverse on SIGTERM.
   private def app(cfg: AppConfig): Resource[IO, Http4sServer] =
     for {
-      stores  <- SharedStores.resource(cfg)
-      denylist = stores.denylist
+      stores        <- SharedStores.resource(cfg)
+      invalidations <- Invalidations.resource(cfg)
+      denylist       = invalidations.fold(stores.denylist)(identity)
       // GlobalOpenTelemetry, autoconfigured via the
       // -Dotel.java.global-autoconfigure.enabled=true javaOption; noop when no
       // exporter is configured, so local runs cost nothing.
@@ -48,7 +49,14 @@ object Main extends IOApp.Simple {
               )
       // No jti/nonce override: single node uses the in-memory jti checker and
       // config-driven stateless nonces. The shared store backs only revocation.
-      server <- Server.resource[IO](cfg, denylist, events, telemetry, onShed = Some(shed.inc()))
+      server <- Server.resource[IO](
+                  Invalidations.adjust(cfg),
+                  denylist,
+                  events,
+                  telemetry,
+                  onShed = Some(shed.inc()),
+                  ready = invalidations.map(_.ready)
+                )
     } yield server
 
   val run: IO[Unit] =

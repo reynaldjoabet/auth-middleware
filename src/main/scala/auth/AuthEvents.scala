@@ -53,39 +53,78 @@ object AuthEvents {
     * authentication rejection is exactly the log line you want to pivot from into the trace that
     * produced it. Pass `Tracer.noop` where no tracing is configured; the sink then behaves
     * identically minus those fields.
+    *
+    * Rejection and error lines are capped at `maxLinesPerSecond` each (see [[LogRateLimiter]]); the
+    * first line after a capped second reports how many were dropped. A disabled level costs a
+    * boolean check, not a span-context lookup.
     */
-  def slf4j[F[_]: Sync: Tracer]: AuthEvents[F] = new AuthEvents[F] {
-    private val log = LoggerFactory.getLogger("auth")
+  def slf4j[F[_]: Sync: Tracer](maxLinesPerSecond: Int = 100): AuthEvents[F] =
+    new AuthEvents[F] {
+      private val log      = LoggerFactory.getLogger("auth")
+      private val rejected = new LogRateLimiter(maxLinesPerSecond)
+      private val errors   = new LogRateLimiter(maxLinesPerSecond)
 
-    def authSucceeded(ctx: AuthContext): F[Unit] =
-      TraceLogging.withTraceContext() {
-        log.debug("authentication succeeded: {}", ctx)
-      }
+      def authSucceeded(ctx: AuthContext): F[Unit] =
+        Sync[F]
+          .delay(log.isDebugEnabled)
+          .ifM(
+            TraceLogging.withTraceContext() {
+              log.debug("authentication succeeded: {}", ctx)
+            },
+            Sync[F].unit
+          )
 
-    def authFailed(error: AuthError, internalDetail: String): F[Unit] =
-      TraceLogging.withTraceContext() {
+      def authFailed(error: AuthError, internalDetail: String): F[Unit] =
         error match {
           case AuthError.ValidationUnavailable =>
-            log.error("token validation unavailable: {}", internalDetail)
+            limited(errors, log.isErrorEnabled) { dropped =>
+              log.error(
+                "token validation unavailable: {}{}",
+                internalDetail,
+                droppedNote(dropped)
+              )
+            }
           case other =>
-            log.info("authentication rejected ({}): {}", other, internalDetail)
+            limited(rejected, log.isInfoEnabled) { dropped =>
+              log.info(
+                "authentication rejected ({}): {}{}",
+                other,
+                internalDetail,
+                droppedNote(dropped)
+              )
+            }
         }
-      }
 
-    // DEBUG, and only the stable code: a challenge is routine protocol flow,
-    // and the full error would render payload (e.g. the DPoP nonce) into logs.
-    override def challengeIssued(
-        error: AuthError,
-        internalDetail: String
-    ): F[Unit] =
-      TraceLogging.withTraceContext() {
-        log.debug(
-          "challenge issued ({}): {}",
-          outcomeCode(error),
-          internalDetail
-        )
-      }
-  }
+      // DEBUG, and only the stable code: a challenge is routine protocol flow,
+      // and the full error would render payload (e.g. the DPoP nonce) into logs.
+      override def challengeIssued(
+          error: AuthError,
+          internalDetail: String
+      ): F[Unit] =
+        Sync[F]
+          .delay(log.isDebugEnabled)
+          .ifM(
+            TraceLogging.withTraceContext() {
+              log.debug(
+                "challenge issued ({}): {}",
+                outcomeCode(error),
+                internalDetail
+              )
+            },
+            Sync[F].unit
+          )
+
+      private def limited(limiter: LogRateLimiter, enabled: => Boolean)(
+          logging: Long => Unit
+      ): F[Unit] =
+        Sync[F].delay(if (enabled) limiter.tryAcquire() else None).flatMap {
+          case Some(dropped) => TraceLogging.withTraceContext()(logging(dropped))
+          case None          => Sync[F].unit
+        }
+
+      private def droppedNote(dropped: Long): String =
+        if (dropped == 0L) "" else s" [$dropped similar lines suppressed in the previous second]"
+    }
 
   /**
     * OpenTelemetry metrics sink — the port of Duende's `Telemetry` counters. Emits `auth.decisions`

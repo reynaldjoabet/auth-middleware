@@ -73,13 +73,38 @@ final case class AuthSettings(
     audience: String :| NonBlank,
     jwksUri: String :| HttpsUriNoFragment,
     dpop: DpopSettings,
-    introspection: IntrospectionSettings
+    introspection: IntrospectionSettings,
+    cache: AuthCacheSettings
 ) derives ConfigReader {
 
   def toAccessTokenConfig: AccessTokenConfig =
-    AccessTokenConfig(issuer, audience, URI.create(jwksUri))
+    AccessTokenConfig(
+      issuer,
+      audience,
+      URI.create(jwksUri),
+      verifiedTokenCacheMaxEntries = cache.verifiedTokens,
+      verifiedTokenCacheMaxTtl = cache.verifiedTokenTtl,
+      revocationCacheTtl = cache.revocationTtl
+    )
 
 }
+
+/**
+  * Hot-path caches; see [[auth.accesstoken.AccessTokenConfig]] for the semantics of each.
+  *
+  * @param verifiedTokens
+  *   verified tokens remembered per node (`0` disables); skips signature checks on reuse
+  * @param verifiedTokenTtl
+  *   cap on reusing one verification, whatever the token's `exp`
+  * @param revocationTtl
+  *   how long a node reuses a denylist answer — the worst-case revocation delay it adds (`0`
+  *   disables)
+  */
+final case class AuthCacheSettings(
+    verifiedTokens: Long :| GreaterEqual[0L],
+    verifiedTokenTtl: FiniteDuration,
+    revocationTtl: FiniteDuration
+) derives ConfigReader
 
 /**
   * RFC 9449 DPoP sender-constrained tokens. When enabled, the middleware accepts the `DPoP` scheme

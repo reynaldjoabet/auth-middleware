@@ -85,7 +85,11 @@ lazy val root = (project in file("."))
       // Size the heap from the container limit, and die on OOM so the
       // orchestrator restarts the node instead of it limping on.
       "-J-XX:MaxRAMPercentage=75",
-      "-J-XX:+ExitOnOutOfMemoryError"
+      "-J-XX:+ExitOnOutOfMemoryError",
+      // cats-effect records every fiber step to enrich stack traces; profiled
+      // at ~15% of CPU on the request path. Re-enable for debugging with
+      // JAVA_OPTS=-Dcats.effect.tracing.mode=cached.
+      "-Dcats.effect.tracing.mode=none"
     ),
     dockerBaseImage    := "eclipse-temurin:21-jre",
     dockerExposedPorts := Seq(8080),

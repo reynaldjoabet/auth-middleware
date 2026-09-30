@@ -125,7 +125,7 @@ object MultiNodeMain extends IOApp.Simple {
                             otel.tracerProvider.get("auth-middleware")
                           )
       otelEvents <- Resource.eval(AuthEvents.otel[IO](meter))
-      events      = AuthEvents.combine(AuthEvents.slf4j[IO], otelEvents)
+      events      = AuthEvents.combine(AuthEvents.slf4j[IO](), otelEvents)
 
       // Per-dependency latency, which matters more here than on one node: with
       // the denylist and the jti set both in Redis, "the cluster is slow" and

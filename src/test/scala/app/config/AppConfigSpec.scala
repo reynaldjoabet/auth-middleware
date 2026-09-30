@@ -44,6 +44,11 @@ class AppConfigSpec extends FunSuite {
             issuer = "https://as.test.example"
             audience = "https://api.test.example"
             jwks-uri = "https://as.test.example/jwks"
+            cache {
+              verified-tokens = 100000
+              verified-token-ttl = 5 minutes
+              revocation-ttl = 1 second
+            }
             $authBlock
           }
           redis {

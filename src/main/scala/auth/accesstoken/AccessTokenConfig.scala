@@ -59,6 +59,21 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
   *   read timeout for JWKS retrieval
   * @param jwksSizeLimitBytes
   *   maximum accepted size of the JWKS document
+  * @param verifiedTokenCacheMaxEntries
+  *   how many successfully verified tokens to remember, keyed by SHA-256 of the token, so a client
+  *   reusing a token skips signature verification. `0` disables the cache. A verified signature
+  *   stays verified, so this changes no decision: expiry is still honoured (an entry never outlives
+  *   the token's `exp`) and the denylist and introspection still run on every request.
+  * @param verifiedTokenCacheMaxTtl
+  *   upper bound on how long a verification is reused, whatever the token's `exp`. Bounds how long
+  *   a token signed by a key the issuer has just withdrawn keeps passing — already the case for
+  *   `jwksCacheTtl`, so keep this at or below it.
+  * @param revocationCacheTtl
+  *   how long each node reuses a denylist answer (see [[auth.revocation.TokenDenylist.cached]]);
+  *   the worst-case revocation latency it adds. `0` (the default) asks the denylist on every
+  *   request.
+  * @param revocationCacheMaxEntries
+  *   cap on cached denylist answers
   */
 final case class AccessTokenConfig(
     issuer: String,
@@ -76,7 +91,11 @@ final case class AccessTokenConfig(
     jwksOutageTtl: FiniteDuration = 6.hours,
     httpConnectTimeout: FiniteDuration = 2.seconds,
     httpReadTimeout: FiniteDuration = 2.seconds,
-    jwksSizeLimitBytes: Int = 100 * 1024
+    jwksSizeLimitBytes: Int = 100 * 1024,
+    verifiedTokenCacheMaxEntries: Long = 100_000L,
+    verifiedTokenCacheMaxTtl: FiniteDuration = 5.minutes,
+    revocationCacheTtl: FiniteDuration = Duration.Zero,
+    revocationCacheMaxEntries: Long = 1_000_000L
 ) {
 
   require(issuer.nonEmpty, "issuer must not be empty")
@@ -94,6 +113,16 @@ final case class AccessTokenConfig(
     "HMAC algorithms are not supported with a JWKS-based verifier; use asymmetric algorithms"
   )
   require(maxTokenLength > 0, "maxTokenLength must be positive")
+  require(
+    verifiedTokenCacheMaxEntries >= 0,
+    "verifiedTokenCacheMaxEntries must not be negative"
+  )
+  require(
+    verifiedTokenCacheMaxTtl >= Duration.Zero,
+    "verifiedTokenCacheMaxTtl must not be negative"
+  )
+  require(revocationCacheTtl >= Duration.Zero, "revocationCacheTtl must not be negative")
+  require(revocationCacheMaxEntries > 0, "revocationCacheMaxEntries must be positive")
 
 }
 

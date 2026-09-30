@@ -3,12 +3,15 @@ package revocation
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.Base64
 
 import scala.concurrent.duration.*
 
+import cats.effect.{Async, Deferred}
+import cats.effect.kernel.Outcome
+import cats.effect.syntax.monadCancel.*
 import cats.effect.syntax.temporal.*
-import cats.effect.Async
 import cats.syntax.all.*
 
 import com.github.benmanes.caffeine.cache.Caffeine
@@ -97,6 +100,10 @@ object TokenIntrospection {
     * Production implementation over an http4s [[Client]] (reuse the app's pooled Ember client).
     * Definitive answers are cached in-process, keyed by SHA-256 of the token — raw tokens are never
     * retained. `Unavailable` is never cached, so a blip does not poison subsequent checks.
+    *
+    * Concurrent misses for the same token are coalesced: one request goes to the AS and every other
+    * caller waits for its answer. Without that, a popular token whose cache entry expires under
+    * load sends one introspection per in-flight request at the same instant.
     */
   def http4s[F[_]: Async](
       config: IntrospectionConfig,
@@ -113,20 +120,43 @@ object TokenIntrospection {
           .build[String, Result]()
       )
 
+      val inFlight = new ConcurrentHashMap[String, Deferred[F, Result]]()
+
       new TokenIntrospection[F] {
 
-        def check(rawToken: String): F[Result] = {
-          val key = tokenKey(rawToken)
-          cache.flatMap(c => Option(c.getIfPresent(key))) match {
-            case Some(cached) => cached.pure[F]
-            case None         =>
-              introspect(rawToken).flatTap {
-                case definitive @ (Result.Active | Result.Inactive) =>
-                  Async[F].delay(cache.foreach(_.put(key, definitive)))
-                case Result.Unavailable => Async[F].unit
-              }
+        def check(rawToken: String): F[Result] =
+          Async[F]
+            .delay {
+              val key = tokenKey(rawToken)
+              (key, cache.flatMap(c => Option(c.getIfPresent(key))))
+            }
+            .flatMap {
+              case (_, Some(cached)) => cached.pure[F]
+              case (key, None)       => coalesced(key, rawToken)
+            }
+
+        // The first caller for `key` becomes the leader and does the round
+        // trip; the rest await its Deferred. The leader always completes it
+        // (Unavailable if cancelled — followers then fail closed, not hang)
+        // and always clears the slot.
+        private def coalesced(key: String, rawToken: String): F[Result] =
+          Deferred[F, Result].flatMap { mine =>
+            Async[F].delay(Option(inFlight.putIfAbsent(key, mine))).flatMap {
+              case Some(leader) => leader.get
+              case None         =>
+                introspect(rawToken)
+                  .flatTap {
+                    case definitive @ (Result.Active | Result.Inactive) =>
+                      Async[F].delay(cache.foreach(_.put(key, definitive)))
+                    case Result.Unavailable => Async[F].unit
+                  }
+                  .guaranteeCase {
+                    case Outcome.Succeeded(result) => result.flatMap(mine.complete).void
+                    case _                         => mine.complete(Result.Unavailable).void
+                  }
+                  .guarantee(Async[F].delay(inFlight.remove(key, mine)).void)
+            }
           }
-        }
 
         private def introspect(rawToken: String): F[Result] = {
           val request = Request[F](Method.POST, config.endpoint)

@@ -37,7 +37,7 @@ object Main extends IOApp.Simple {
                             otel.tracerProvider.get("auth-middleware")
                           )
       otelEvents <- Resource.eval(AuthEvents.otel[IO](meter))
-      events      = AuthEvents.combine(AuthEvents.slf4j[IO], otelEvents)
+      events      = AuthEvents.combine(AuthEvents.slf4j[IO](), otelEvents)
       // Counters say what was decided; this says what it cost and which
       // dependency spent it.
       telemetry <- AuthTelemetry.otel[IO](meter)

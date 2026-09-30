@@ -9,6 +9,7 @@ import cats.effect.{Async, Clock, Resource}
 import cats.effect.std.Dispatcher
 import cats.syntax.all.*
 
+import com.github.benmanes.caffeine.cache.stats.{ConcurrentStatsCounter, StatsCounter}
 import com.nimbusds.jose.jwk.source.{
   CachingJWKSetSource,
   OutageTolerantJWKSetSource,
@@ -86,6 +87,13 @@ trait AuthTelemetry[F[_]] {
 
   def jwksOutageListener[C <: SecurityContext]: EventListener[OutageTolerantJWKSetSource[C], C]
 
+  /**
+    * Stats sink for the verified-token cache ([[AccessTokenValidator]]). Caffeine records hits,
+    * misses and evictions into it with lock-free adders, and the metrics side reads it only when
+    * collecting — so watching the hit ratio costs the request path nothing. `None` records nothing.
+    */
+  def verifiedTokenCacheStats: Option[StatsCounter]
+
 }
 
 object AuthTelemetry {
@@ -118,6 +126,8 @@ object AuthTelemetry {
 
     def jwksOutageListener[C <: SecurityContext]: EventListener[OutageTolerantJWKSetSource[C], C] =
       _ => ()
+
+    val verifiedTokenCacheStats: Option[StatsCounter] = None
   }
 
   /**
@@ -159,13 +169,35 @@ object AuthTelemetry {
                         )
                         .create
                     )
+      cacheStats = new ConcurrentStatsCounter()
+      // Observed at collection time from Caffeine's own adders: a hit-ratio
+      // metric with no per-request cost. Evictions > 0 at steady state means
+      // `verified-tokens` is too small for the active token population.
+      _ <- meter
+             .observableCounter[Long]("auth.token_cache.lookups")
+             .withDescription("Verified-token cache lookups, by result")
+             .createWithCallback { measurement =>
+               Async[F].delay(cacheStats.snapshot()).flatMap { stats =>
+                 measurement.record(stats.hitCount, Attribute("result", "hit")) *>
+                   measurement.record(stats.missCount, Attribute("result", "miss"))
+               }
+             }
+      _ <- meter
+             .observableCounter[Long]("auth.token_cache.evictions")
+             .withDescription("Verified tokens evicted for size (not expiry)")
+             .createWithCallback { measurement =>
+               Async[F]
+                 .delay(cacheStats.snapshot().evictionCount)
+                 .flatMap(measurement.record(_))
+             }
     } yield new Otel[F](
       dispatcher,
       validation,
       denylist,
       introspection,
       jwksFetch,
-      jwksEvents
+      jwksEvents,
+      cacheStats
     )
 
   private def duration[F[_]](
@@ -186,8 +218,11 @@ object AuthTelemetry {
       denylistDuration: Histogram[F, Double],
       introspectionDuration: Histogram[F, Double],
       jwksFetchDuration: Histogram[F, Double],
-      jwksEvents: Counter[F, Long]
+      jwksEvents: Counter[F, Long],
+      cacheStats: StatsCounter
   ) extends AuthTelemetry[F] {
+
+    val verifiedTokenCacheStats: Option[StatsCounter] = Some(cacheStats)
 
     def instrumentValidator(
         validator: AccessTokenValidator[F]

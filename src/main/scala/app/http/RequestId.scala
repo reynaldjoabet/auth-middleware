@@ -1,5 +1,6 @@
 package app.http
 
+import java.util.concurrent.ThreadLocalRandom
 import java.util.UUID
 
 import cats.data.Kleisli
@@ -63,11 +64,19 @@ object RequestId {
     request.attributes.lookup(middleware.RequestId.requestIdAttrKey)
 
   /**
-    * Correlation only — never an authentication or authorization value, so a plain random UUID is
-    * the right strength.
+    * A random (version 4) UUID from the calling thread's own generator.
+    *
+    * Correlation only — never an authentication or authorization value, so it needs uniqueness, not
+    * unpredictability. `UUID.randomUUID()` draws from one shared, synchronized `SecureRandom`,
+    * which every request thread contends on under load; `ThreadLocalRandom` has no shared state.
     */
   private def mint[F[_]: Sync]: F[String] =
-    Sync[F].delay(UUID.randomUUID().toString)
+    Sync[F].delay {
+      val random = ThreadLocalRandom.current()
+      val msb    = (random.nextLong() & ~0xf000L) | 0x4000L                        // version 4
+      val lsb    = (random.nextLong() & 0x3fffffffffffffffL) | 0x8000000000000000L // RFC 4122 variant
+      new UUID(msb, lsb).toString
+    }
 
   private def inboundId[F[_]](request: Request[F]): Option[String] =
     request.headers

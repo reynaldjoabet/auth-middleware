@@ -247,10 +247,78 @@ object AccessTokenAuth {
   private val DpopNonceHeader = ci"DPoP-Nonce"
 
   private def usesDpopScheme[F[_]](req: Request[F]): Boolean =
-    req.headers.get[Authorization].exists {
-      case Authorization(Credentials.Token(scheme, _)) => scheme == DpopScheme
-      case _                                           => false
+    tokenCredentials(req).flatten.exists(_._1 == DpopScheme)
+
+  /**
+    * The request's `Authorization` credentials as `(scheme, token68)`.
+    *
+    *   - `None`: no usable header (absent, or unparseable — as http4s's typed lookup treats it)
+    *   - `Some(None)`: a parseable header that is not a token68 credential (auth-params form)
+    *   - `Some(Some((scheme, token)))`: a token68 credential
+    *
+    * Every authenticated request reads this, and http4s's typed lookup runs a parser-combinator
+    * grammar each time — a measurable share of CPU under load. The well-formed case, `<scheme> SP
+    * <token68>`, is recognised by a direct character scan; anything else falls through to the typed
+    * parser, so unusual input behaves exactly as before.
+    */
+  private[auth] def tokenCredentials[F[_]](
+      req: Request[F]
+  ): Option[Option[(CIString, String)]] =
+    req.headers.get(Authorization.name).map(_.head.value).flatMap { raw =>
+      fastTokenCredentials(raw) match {
+        case found @ Some(_) => Some(found)
+        case None            =>
+          req.headers.get[Authorization].map {
+            case Authorization(Credentials.Token(scheme, token)) => Some((scheme, token))
+            case _                                               => None
+          }
+      }
     }
+
+  /**
+    * `auth-scheme SP token68`, or `None` when `raw` is not exactly that shape. One space, not the
+    * `1*SP` RFC 9110 §11.4 allows: http4s's parser takes exactly one, and this must agree with it —
+    * other shapes fall through to that parser.
+    */
+  private[auth] def fastTokenCredentials(raw: String): Option[(CIString, String)] = {
+    val space = raw.indexOf(' ')
+    if (space <= 0) None
+    else {
+      val scheme = raw.substring(0, space)
+      val token  = raw.substring(space + 1)
+      if (isToken(scheme) && isToken68(token)) Some((CIString(scheme), token)) else None
+    }
+  }
+
+  // tchar (RFC 9110 §5.6.2)
+  private def isToken(s: String): Boolean = {
+    var i = 0
+    while (i < s.length) {
+      val c  = s.charAt(i)
+      val ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+        "!#$%&'*+-.^_`|~".indexOf(c.toInt) >= 0
+      if (!ok) return false
+      i += 1
+    }
+    s.nonEmpty
+  }
+
+  // token68 = 1*( ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" / "/" ) *"=" (RFC 9110 §11.2)
+  private def isToken68(s: String): Boolean = {
+    var i = 0
+    while (
+      i < s.length && {
+        val c = s.charAt(i)
+        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+        c == '-' || c == '.' || c == '_' || c == '~' || c == '+' || c == '/'
+      }
+    ) i += 1
+    if (i == 0) false
+    else {
+      while (i < s.length && s.charAt(i) == '=') i += 1
+      i == s.length
+    }
+  }
 
   /**
     * Require every scope in `required` on top of authentication. Compose per route group, e.g.
@@ -395,10 +463,10 @@ object AccessTokenAuth {
     else if (req.headers.headers.count(_.name == Authorization.name) > 1)
       Left(AuthError.InvalidRequest.MultipleCredentials)
     else
-      req.headers.get[Authorization] match {
-        case Some(Authorization(Credentials.Token(AuthScheme.Bearer, token))) =>
+      tokenCredentials(req) match {
+        case Some(Some((AuthScheme.Bearer, token))) =>
           Right((TokenScheme.Bearer, token))
-        case Some(Authorization(Credentials.Token(DpopScheme, token))) if dpopEnabled =>
+        case Some(Some((DpopScheme, token))) if dpopEnabled =>
           Right((TokenScheme.Dpop, token))
         case Some(_) =>
           Left(AuthError.InvalidToken.WrongScheme)

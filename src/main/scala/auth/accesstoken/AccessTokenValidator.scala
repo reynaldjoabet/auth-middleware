@@ -1,13 +1,18 @@
 package auth
 package accesstoken
 
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.text.ParseException
+import java.util.Base64
 
 import scala.jdk.CollectionConverters.*
 
 import cats.effect.Sync
 import cats.syntax.all.*
 
+import com.github.benmanes.caffeine.cache.{Cache, Caffeine, Expiry}
+import com.github.benmanes.caffeine.cache.stats.StatsCounter
 import com.nimbusds.jose.jwk.source.{JWKSource, JWKSourceBuilder}
 import com.nimbusds.jose.proc.{
   BadJOSEException,
@@ -66,6 +71,10 @@ object AccessTokenValidator {
     *   latency/health instrumentation for this validator and the dependencies handed to it —
     *   including Nimbus's own JWKS cache lifecycle, which is otherwise entirely opaque. Defaults to
     *   [[AuthTelemetry.noop]].
+    *
+    * When `config.revocationCacheTtl` is positive the denylist is fronted by
+    * [[TokenDenylist.cached]]; the telemetry sits beneath the cache, so the denylist metrics count
+    * real store round trips only.
     */
   def default[F[_]: Sync](
       config: AccessTokenConfig,
@@ -100,9 +109,18 @@ object AccessTokenValidator {
           )
           .build()
       }
-      .map(
-        withKeySource(config, _, events, denylist, introspection, telemetry)
-      )
+      .flatMap { keySource =>
+        val instrumented = telemetry.instrumentDenylist(denylist)
+        val revocation   =
+          if (config.revocationCacheTtl > scala.concurrent.duration.Duration.Zero)
+            TokenDenylist.cached(
+              instrumented,
+              config.revocationCacheTtl,
+              config.revocationCacheMaxEntries
+            )
+          else instrumented.pure[F]
+        revocation.map(d => build(config, keySource, events, d, introspection, telemetry))
+      }
 
   /**
     * Build an access token validator over an explicit key source — used in tests and for non-HTTP
@@ -124,6 +142,9 @@ object AccessTokenValidator {
     * @param telemetry
     *   instrumentation for the validator and its revocation dependencies; the key source is
     *   caller-supplied here, so nothing instruments it
+    *
+    * `config.revocationCacheTtl` is not applied here; wrap `denylist` in [[TokenDenylist.cached]]
+    * yourself if wanted.
     */
   def withKeySource[F[_]: Sync](
       config: AccessTokenConfig,
@@ -133,13 +154,32 @@ object AccessTokenValidator {
       introspection: Option[TokenIntrospection[F]] = None,
       telemetry: AuthTelemetry[F] = AuthTelemetry.noop[F]
   ): AccessTokenValidator[F] =
+    build(
+      config,
+      keySource,
+      events,
+      telemetry.instrumentDenylist(denylist),
+      introspection,
+      telemetry
+    )
+
+  // `denylist` arrives already instrumented (and possibly cached).
+  private def build[F[_]: Sync](
+      config: AccessTokenConfig,
+      keySource: JWKSource[SecurityContext],
+      events: AuthEvents[F],
+      denylist: TokenDenylist[F],
+      introspection: Option[TokenIntrospection[F]],
+      telemetry: AuthTelemetry[F]
+  ): AccessTokenValidator[F] =
     telemetry.instrumentValidator(
       new Impl[F](
         config,
         keySource,
         events,
-        telemetry.instrumentDenylist(denylist),
-        introspection.map(telemetry.instrumentIntrospection)
+        denylist,
+        introspection.map(telemetry.instrumentIntrospection),
+        telemetry.verifiedTokenCacheStats
       )
     )
 
@@ -148,7 +188,8 @@ object AccessTokenValidator {
       keySource: JWKSource[SecurityContext],
       events: AuthEvents[F],
       denylist: TokenDenylist[F],
-      introspection: Option[TokenIntrospection[F]]
+      introspection: Option[TokenIntrospection[F]],
+      cacheStats: Option[StatsCounter]
   ) extends AccessTokenValidator[F] {
 
     private val processor: DefaultJWTProcessor[SecurityContext] = {
@@ -183,6 +224,41 @@ object AccessTokenValidator {
       p
     }
 
+    /**
+      * Successfully verified tokens, keyed by base64url(SHA-256(token)) so raw tokens are never
+      * retained. Only the signature/claims verification is cached — revocation runs every time.
+      * Each entry expires at the earlier of the token's `exp` and `verifiedTokenCacheMaxTtl`.
+      */
+    private val verified: Option[Cache[String, AuthContext]] =
+      Option.when(
+        config.verifiedTokenCacheMaxEntries > 0 &&
+          config.verifiedTokenCacheMaxTtl > scala.concurrent.duration.Duration.Zero
+      ) {
+        val maxTtlNanos = config.verifiedTokenCacheMaxTtl.toNanos
+        val sized       = Caffeine.newBuilder().maximumSize(config.verifiedTokenCacheMaxEntries)
+        cacheStats
+          .fold(sized)(stats => sized.recordStats(() => stats))
+          .expireAfter(new Expiry[String, AuthContext] {
+            def expireAfterCreate(key: String, ctx: AuthContext, now: Long): Long = {
+              val remainingMillis = ctx.expiresAt.toEpochMilli - System.currentTimeMillis()
+              math.max(0L, math.min(maxTtlNanos, remainingMillis * 1_000_000L))
+            }
+            def expireAfterUpdate(
+                key: String,
+                ctx: AuthContext,
+                now: Long,
+                currentDuration: Long
+            ): Long = currentDuration
+            def expireAfterRead(
+                key: String,
+                ctx: AuthContext,
+                now: Long,
+                currentDuration: Long
+            ): Long = currentDuration
+          })
+          .build[String, AuthContext]()
+      }
+
     def validate(token: String): F[Either[AuthError, AuthContext]] =
       if (token.length > config.maxTokenLength)
         reject(
@@ -190,22 +266,52 @@ object AccessTokenValidator {
           s"token length ${token.length}"
         )
       else
-        // `blocking` because the key selector may fetch the JWKS over HTTP.
-        Sync[F]
-          .blocking(processor.process(SignedJWT.parse(token), null))
-          .attempt
-          .flatMap {
-            case Right(claims)           => checkDenylist(token, claims)
-            case Left(e: ParseException) =>
-              reject(AuthError.InvalidToken.Malformed, e.getMessage)
-            case Left(e: BadJOSEException) =>
-              reject(AuthError.InvalidToken.Rejected, e.getMessage)
-            case Left(e: KeySourceException) =>
-              reject(AuthError.ValidationUnavailable, e.getMessage)
-            case Left(e: JOSEException) =>
-              reject(AuthError.InvalidToken.Rejected, e.getMessage)
-            case Left(other) => Sync[F].raiseError(other)
-          }
+        verified match {
+          case None        => verify(token, None)
+          case Some(cache) =>
+            Sync[F]
+              .delay {
+                val key = tokenKey(token)
+                (key, Option(cache.getIfPresent(key)))
+              }
+              .flatMap {
+                case (_, Some(ctx)) => checkDenylist(token, ctx)
+                case (key, None)    => verify(token, Some((cache, key)))
+              }
+        }
+
+    private def verify(
+        token: String,
+        remember: Option[(Cache[String, AuthContext], String)]
+    ): F[Either[AuthError, AuthContext]] =
+      // `blocking` because the key selector may fetch the JWKS over HTTP (a
+      // cold cache or an unknown `kid`). Only cache misses get here; on the
+      // work-stealing pool `blocking` hands the worker off rather than
+      // shifting threads.
+      Sync[F]
+        .blocking(processor.process(SignedJWT.parse(token), null))
+        .attempt
+        .flatMap {
+          // The finished context is what gets cached, so a hit skips re-reading
+          // and re-refining the claims as well as the signature check.
+          case Right(claims) =>
+            contextOf(claims) match {
+              case Left((err, detail)) => reject(err, detail)
+              case Right(ctx)          =>
+                remember.fold(Sync[F].unit) { case (cache, key) =>
+                  Sync[F].delay(cache.put(key, ctx))
+                } *> checkDenylist(token, ctx)
+            }
+          case Left(e: ParseException) =>
+            reject(AuthError.InvalidToken.Malformed, e.getMessage)
+          case Left(e: BadJOSEException) =>
+            reject(AuthError.InvalidToken.Rejected, e.getMessage)
+          case Left(e: KeySourceException) =>
+            reject(AuthError.ValidationUnavailable, e.getMessage)
+          case Left(e: JOSEException) =>
+            reject(AuthError.InvalidToken.Rejected, e.getMessage)
+          case Left(other) => Sync[F].raiseError(other)
+        }
 
     // `jti` presence is governed solely by `config.requiredClaims` (Nimbus rejects
     // a missing required claim before we get here). A token reaching this point
@@ -214,17 +320,17 @@ object AccessTokenValidator {
     // cannot dodge the denylist by omitting it.
     private def checkDenylist(
         token: String,
-        claims: JWTClaimsSet
+        ctx: AuthContext
     ): F[Either[AuthError, AuthContext]] =
-      Option(claims.getJWTID) match {
+      Option(ctx.claims.getJWTID) match {
         case None =>
-          checkIntrospection(token, claims)
+          checkIntrospection(token, ctx)
         case Some(jti) =>
           // A store we cannot reach proves nothing: fail closed with 503.
           denylist.isRevoked(jti).attempt.flatMap {
             case Right(true) =>
               reject(AuthError.InvalidToken.Revoked, s"jti $jti is denylisted")
-            case Right(false) => checkIntrospection(token, claims)
+            case Right(false) => checkIntrospection(token, ctx)
             case Left(e)      =>
               reject(
                 AuthError.ValidationUnavailable,
@@ -239,13 +345,13 @@ object AccessTokenValidator {
     // we cannot prove active.
     private def checkIntrospection(
         token: String,
-        claims: JWTClaimsSet
+        ctx: AuthContext
     ): F[Either[AuthError, AuthContext]] =
       introspection match {
-        case None    => accept(claims)
+        case None    => accept(ctx)
         case Some(i) =>
           i.check(token).flatMap {
-            case TokenIntrospection.Result.Active   => accept(claims)
+            case TokenIntrospection.Result.Active   => accept(ctx)
             case TokenIntrospection.Result.Inactive =>
               reject(
                 AuthError.InvalidToken.Revoked,
@@ -259,57 +365,56 @@ object AccessTokenValidator {
           }
       }
 
-    private def accept(
-        claims: JWTClaimsSet
-    ): F[Either[AuthError, AuthContext]] = {
-      val built: Either[(AuthError, String), AuthContext] =
-        for {
-          // `sub` is required (RFC 9068 §2.2 — present even for client_credentials,
-          // where it equals the client_id). Its presence is also enforced by
-          // Nimbus via `config.requiredClaims`.
-          sub <- Option(claims.getSubject)
-                   .toRight((AuthError.InvalidToken.Rejected, "missing sub claim"))
-          subject <- Subject
-                       .either(sub)
-                       .left
-                       .map(m => (AuthError.InvalidToken.Rejected, m))
-          tokenId <- Option(claims.getJWTID) match {
-                       case None    => Right(None)
-                       case Some(j) =>
-                         ReceivedJwtId
-                           .either(j)
-                           .bimap(m => (AuthError.InvalidToken.Rejected, m), Some(_))
-                     }
-          // `exp` is in the default requiredClaims, but that set is
-          // operator-configurable — reject rather than NPE if it was relaxed.
-          expiresAt <- Option(claims.getExpirationTime)
-                         .map(_.toInstant)
-                         .toRight((AuthError.InvalidToken.Rejected, "missing exp claim"))
-          // Fail closed on a present-but-malformed cnf: never silently downgrade a
-          // sender-constrained token to an unbound one.
-          confirmation <- confirmationOf(claims) match {
-                            case Cnf.Unbound    => Right(None)
-                            case Cnf.Bound(c)   => Right(Some(c))
-                            case Cnf.Invalid(r) => Left((AuthError.InvalidToken.Rejected, r))
-                          }
-        } yield AuthContext(
-          subject = subject,
-          clientId = stringClaim(claims, "client_id")
-            .orElse(stringClaim(claims, "azp"))
-            .flatMap(ClientId.option),
-          scopes = rawScopeTokens(claims).flatMap(ScopeToken.option).toSet,
-          tokenId = tokenId,
-          expiresAt = expiresAt,
-          acr = stringClaim(claims, "acr").flatMap(Acr.option),
-          authTime = dateClaim(claims, "auth_time"),
-          confirmation = confirmation,
-          claims = claims
-        )
-      built match {
-        case Right(ctx)       => events.authSucceeded(ctx).as(ctx.asRight)
-        case Left((err, det)) => reject(err, det)
-      }
-    }
+    private def accept(ctx: AuthContext): F[Either[AuthError, AuthContext]] =
+      events.authSucceeded(ctx).as(ctx.asRight)
+
+    /**
+      * The authenticated principal a verified claims set describes, or why it cannot be one. Pure
+      * and deterministic in the claims, which is what makes the result safe to cache.
+      */
+    private def contextOf(claims: JWTClaimsSet): Either[(AuthError, String), AuthContext] =
+      for {
+        // `sub` is required (RFC 9068 §2.2 — present even for client_credentials,
+        // where it equals the client_id). Its presence is also enforced by
+        // Nimbus via `config.requiredClaims`.
+        sub <- Option(claims.getSubject)
+                 .toRight((AuthError.InvalidToken.Rejected, "missing sub claim"))
+        subject <- Subject
+                     .either(sub)
+                     .left
+                     .map(m => (AuthError.InvalidToken.Rejected, m))
+        tokenId <- Option(claims.getJWTID) match {
+                     case None    => Right(None)
+                     case Some(j) =>
+                       ReceivedJwtId
+                         .either(j)
+                         .bimap(m => (AuthError.InvalidToken.Rejected, m), Some(_))
+                   }
+        // `exp` is in the default requiredClaims, but that set is
+        // operator-configurable — reject rather than NPE if it was relaxed.
+        expiresAt <- Option(claims.getExpirationTime)
+                       .map(_.toInstant)
+                       .toRight((AuthError.InvalidToken.Rejected, "missing exp claim"))
+        // Fail closed on a present-but-malformed cnf: never silently downgrade a
+        // sender-constrained token to an unbound one.
+        confirmation <- confirmationOf(claims) match {
+                          case Cnf.Unbound    => Right(None)
+                          case Cnf.Bound(c)   => Right(Some(c))
+                          case Cnf.Invalid(r) => Left((AuthError.InvalidToken.Rejected, r))
+                        }
+      } yield AuthContext(
+        subject = subject,
+        clientId = stringClaim(claims, "client_id")
+          .orElse(stringClaim(claims, "azp"))
+          .flatMap(ClientId.option),
+        scopes = rawScopeTokens(claims).flatMap(ScopeToken.option).toSet,
+        tokenId = tokenId,
+        expiresAt = expiresAt,
+        acr = stringClaim(claims, "acr").flatMap(Acr.option),
+        authTime = dateClaim(claims, "auth_time"),
+        confirmation = confirmation,
+        claims = claims
+      )
 
     /**
       * Read the `cnf` confirmation (Nimbus-parsed): `jkt` (DPoP, RFC 9449) or `x5t#S256` (mTLS, RFC
@@ -364,6 +469,13 @@ object AccessTokenValidator {
     ): Option[java.time.Instant] =
       try Option(claims.getDateClaim(name)).map(_.toInstant)
       catch { case _: ParseException => None }
+
+    private def tokenKey(token: String): String =
+      Base64.getUrlEncoder.withoutPadding.encodeToString(
+        MessageDigest
+          .getInstance("SHA-256")
+          .digest(token.getBytes(StandardCharsets.US_ASCII))
+      )
 
     // Both forms seen in the wild: `scope` as a space-delimited string (RFC 9068)
     // and `scp` as a JSON string array (Okta, Microsoft Entra ID). Returns the

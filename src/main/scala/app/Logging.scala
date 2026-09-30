@@ -14,12 +14,11 @@ import scribe.Level
   *
   * The trade-off against the XML it replaces: configuration is now typed and compiled, but it is
   * also code, so it must run before anything logs — hence [[configure]] as the first statement of
-  * each entrypoint. Redeploying to change a log level is the cost; the previous setup could not be
-  * edited at runtime either, since the XML shipped inside the jar.
+  * each entrypoint. The root level comes from the `LOG_LEVEL` environment variable (default
+  * `info`), so changing it takes a restart, not a rebuild.
   *
-  * One deliberate regression: logback's `AsyncAppender` (queue 8192, `neverBlock=true`) is gone,
-  * and scribe's console writer is synchronous. If a burst of logging ever shows up in request
-  * latency, that is the thing to revisit.
+  * Writes go through [[AsyncLogWriter]] — the equivalent of logback's `AsyncAppender` with
+  * `neverBlock=true` — so a burst of logging never stalls request threads on stdout.
   */
 object Logging {
 
@@ -32,14 +31,34 @@ object Logging {
     formatter"$dateFull $levelPaddedRight [$threadName] $loggerName traceId=${mdc("trace_id")} spanId=${mdc("span_id")} requestId=${mdc("request_id")} - $messages$newLine"
 
   /**
+    * `LOG_LEVEL` (trace, debug, info, warn, error; any case), defaulting to info. An unrecognised
+    * value is reported on stderr — nothing can log yet — rather than silently ignored.
+    */
+  private def levelFromEnv: Level =
+    sys.env.get("LOG_LEVEL").filter(_.trim.nonEmpty) match {
+      case None       => Level.Info
+      case Some(name) =>
+        Level.get(name.trim).getOrElse {
+          System.err.println(s"LOG_LEVEL=$name is not a log level; using info")
+          Level.Info
+        }
+    }
+
+  /**
     * Installs the root handler. Call once, before anything else runs.
     */
-  def configure(minimumLevel: Level = Level.Info): Unit = {
+  def configure(minimumLevel: Level = levelFromEnv): Unit = {
+    val writer = new AsyncLogWriter(ConsoleWriter)
+    // Flush what is still queued on exit (SIGTERM included): the last lines
+    // before a shutdown are usually the ones someone needs.
+    Runtime.getRuntime.addShutdownHook(
+      Thread.ofPlatform().unstarted(() => writer.dispose())
+    )
     val _ = scribe.Logger.root
       .clearHandlers()
       .withHandler(
         formatter = consoleFormat,
-        writer = ConsoleWriter,
+        writer = writer,
         minimumLevel = Some(minimumLevel)
       )
       .replace()

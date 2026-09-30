@@ -72,9 +72,33 @@ lazy val root = (project in file("."))
       ExclusionRule("ch.qos.logback", "logback-classic"),
       ExclusionRule("ch.qos.logback", "logback-core"),
       ExclusionRule("org.playframework", "play-logback_3")
+    ),
+    // -- Packaging (`Docker/publishLocal`, `Universal/packageBin`) -----------
+    // PlayJava would package Play's ProdServerStart; the service is the http4s
+    // stack. MultiNodeMain is the load-balanced production posture.
+    Compile / mainClass := Some("app.MultiNodeMain"),
+    // No Scaladoc in the package: it slows every build and ships nothing.
+    Compile / doc / sources  := Seq.empty,
+    Universal / javaOptions ++= Seq(
+      // Without this the packaged app's OpenTelemetry is a silent no-op.
+      "-Dotel.java.global-autoconfigure.enabled=true",
+      // Size the heap from the container limit, and die on OOM so the
+      // orchestrator restarts the node instead of it limping on.
+      "-J-XX:MaxRAMPercentage=75",
+      "-J-XX:+ExitOnOutOfMemoryError"
+    ),
+    dockerBaseImage    := "eclipse-temurin:21-jre",
+    dockerExposedPorts := Seq(8080),
+    // Defaults the deployment can override. Record 1% of new traces (and
+    // follow the caller's decision when it sent one): full tracing at high
+    // request rates costs more than the service itself.
+    dockerEnvVars := Map(
+      "OTEL_SERVICE_NAME"       -> "auth-middleware",
+      "OTEL_TRACES_SAMPLER"     -> "parentbased_traceidratio",
+      "OTEL_TRACES_SAMPLER_ARG" -> "0.01"
     )
   )
-  .enablePlugins(PlayJava)
+  .enablePlugins(PlayJava, DockerPlugin)
   .disablePlugins(PlayLayoutPlugin)
 
 javaOptions += "-Dotel.java.global-autoconfigure.enabled=true"

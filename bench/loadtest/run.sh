@@ -16,6 +16,10 @@
 #                                                 Bearer only, so no DPoP scenarios
 #   OTEL_SDK_DISABLED=true bench/loadtest/run.sh  # OpenTelemetry off (the ZIO
 #                                                 build has none; use for A/B)
+#   STORE=postgres bench/loadtest/run.sh        # shared auth state (denylist,
+#                                                 DPoP jtis and nonces) in
+#                                                 Postgres instead of Redis
+#   STORE=postgres STORE_PG_MAX_BATCH=1 ...     # ...one statement per call
 #
 # CONNS stays below 50 on purpose. fs2 binds the listening socket with the
 # JDK's default backlog of 50, so opening more connections than that at once
@@ -41,6 +45,7 @@ PROOFS=${PROOFS:-150000}
 SERVICE=${SERVICE:-http4s}
 OTEL_SDK_DISABLED=${OTEL_SDK_DISABLED:-false}
 NONCE_HARVEST=${NONCE_HARVEST:-10s}
+STORE=${STORE:-redis}
 
 HTTP_PORT=18080
 JWKS_PORT=8443
@@ -86,6 +91,7 @@ start_server() { # extra JAVA_OPTS
   env HTTP_HOST=127.0.0.1 HTTP_PORT=$HTTP_PORT \
     DB_HOST=127.0.0.1 DB_PORT=$PG_PORT DB_NAME=auth DB_USER=auth DB_PASSWORD=unused \
     AUTH_ISSUER=$ISSUER AUTH_AUDIENCE=$AUDIENCE AUTH_JWKS_URI="https://localhost:$JWKS_PORT/jwks.json" \
+    STORE_BACKEND=$STORE \
     DPOP_NONCE_ENABLED=$NONCE_ENABLED DPOP_NONCE_MODE=$NONCE_MODE DPOP_NONCE_KEY=$NONCE_KEY \
     OTEL_SERVICE_NAME=auth-middleware OTEL_SDK_DISABLED=$OTEL_SDK_DISABLED \
     OTEL_TRACES_SAMPLER=parentbased_traceidratio OTEL_TRACES_SAMPLER_ARG=0.01 \
@@ -183,8 +189,17 @@ wrk -t"$THREADS" -c"$CONNS" -d15s -s "$SCRIPTS/bearer.lua" "$BASE/me" -- "$MATER
 run "1. GET /health — HTTP stack only, no auth (ceiling)" -d"$DURATION" "$BASE/health"
 run "2. Bearer, one token reused (verified-token cache hit)" -d"$DURATION" \
   -H "Authorization: Bearer $TOKEN" "$BASE/me"
-run "3. Bearer, $TOKENS distinct tokens (cache + revocation cache + Redis)" -d"$DURATION" \
+run "3. Bearer, $TOKENS distinct tokens (cache + revocation cache + $STORE)" -d"$DURATION" \
   -s "$SCRIPTS/bearer.lua" "$BASE/me" -- "$MATERIAL/tokens.txt"
+
+log "Restarting with the revocation cache off: one $STORE read per request"
+stop_server
+start_server "-Dapp.auth.cache.revocation-ttl=0"
+wrk -t"$THREADS" -c"$CONNS" -d10s -s "$SCRIPTS/bearer.lua" "$BASE/me" -- "$MATERIAL/tokens.txt" >/dev/null
+run "3b. Bearer, $TOKENS distinct tokens, revocation cache OFF ($STORE read every request)" \
+  -d"$DURATION" -s "$SCRIPTS/bearer.lua" "$BASE/me" -- "$MATERIAL/tokens.txt"
+stop_server
+start_server
 
 dpop_run() { # label
   run "$1" -d"$DPOP_DURATION" -s "$SCRIPTS/dpop.lua" "$BASE/me" -- "$MATERIAL/dpop.txt" "$THREADS"
@@ -199,9 +214,9 @@ restart_with_nonces() { # enabled mode
 if [[ "$SERVICE" == "http4s" ]]; then
 log "Minting $PROOFS single-use DPoP proofs (valid for 60 s)"
 mint 0 "$PROOFS"
-dpop_run "4a. DPoP, no server nonce (ES256 verify + Redis SET NX on the jti)"
+dpop_run "4a. DPoP, no server nonce (ES256 verify + $STORE single-use write on the jti)"
 
-log "Restarting with stateless nonces (shared AES key; Redis holds only spent jtis)"
+log "Restarting with stateless nonces (shared AES key; $STORE holds only spent jtis)"
 restart_with_nonces true stateless
 mint 0 1
 curl -s -o /dev/null -D - -H "Authorization: DPoP $(sed -n 1p "$MATERIAL/dpop.txt")" \
@@ -209,9 +224,9 @@ curl -s -o /dev/null -D - -H "Authorization: DPoP $(sed -n 1p "$MATERIAL/dpop.tx
   awk 'tolower($1) == "dpop-nonce:" { sub(/\r$/, "", $2); print $2 }' >"$WORK/nonces.txt"
 log "Minting $PROOFS proofs carrying the one stateless nonce"
 mint 0 "$PROOFS" "$WORK/nonces.txt"
-dpop_run "4b. DPoP, stateless nonce (AES-GCM check + mint, Redis SET NX on the jti)"
+dpop_run "4b. DPoP, stateless nonce (AES-GCM check + mint, $STORE single-use write on the jti)"
 
-log "Restarting with Redis single-use nonces (consumed on use, minted per response)"
+log "Restarting with $STORE single-use nonces (consumed on use, minted per response)"
 restart_with_nonces true redis
 mint 0 1
 rm -f "$WORK"/nonces.txt*
@@ -221,7 +236,7 @@ cat "$WORK"/nonces.txt.* >"$WORK/nonces.txt"
 HARVESTED=$(wc -l <"$WORK/nonces.txt" | tr -d ' ')
 log "Harvested $HARVESTED single-use nonces; minting one proof per nonce (up to $PROOFS)"
 mint 0 "$((HARVESTED < PROOFS ? HARVESTED : PROOFS))" "$WORK/nonces.txt"
-dpop_run "4c. DPoP, Redis single-use nonce (Redis DEL + SET per request, in-memory jti)"
+dpop_run "4c. DPoP, $STORE single-use nonce (consume + mint per request, in-memory jti)"
 
 restart_with_nonces false stateless
 fi

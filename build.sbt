@@ -63,6 +63,7 @@ lazy val root = (project in file("."))
       "io.opentelemetry" % "opentelemetry-exporter-otlp"               % "1.66.0" % Runtime,
       "io.opentelemetry" % "opentelemetry-sdk-extension-autoconfigure" % "1.66.0" % Runtime,
       Dependencies.sageClientCe,
+      skunkCore,
       guice,
       "jakarta.inject" % "jakarta.inject-api" % "2.0.1",
       scribe,
@@ -121,6 +122,9 @@ lazy val bench = (project in file("bench"))
   .enablePlugins(JmhPlugin)
   .settings(
     name := "auth-middleware-bench",
+    // Its own JVM, so a benchmark's CPU and GC figures are its alone, not the
+    // sbt server's.
+    Compile / run / fork := true,
     // Only for bench.BareNetty, the backend comparison: the service runs on Ember.
     libraryDependencies ++= http4sNettyServer +: nettyNativeTransports,
     scalaVersion         := "3.9.0",

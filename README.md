@@ -2108,3 +2108,200 @@ When you encrypt your data, your data is protected, but you have to protect your
 You can even encrypt the data encryption key under another encryption key, and encrypt that encryption key under another encryption key. But, eventually, one key must remain in plaintext so you can decrypt the keys and your data. This top-level plaintext key encryption key is known as the root key.
 
 ![alt text](image-5.png)
+## Running at high throughput
+
+Very high request rates come from a fleet of stateless nodes, not one server. What limits the fleet is the work each request does on each node's CPU, plus the throughput of anything the nodes share (Redis, the authorization server).
+
+### Per-core cost of validating a token
+
+Measured with `sbt --client "bench/Jmh/run -i 5 -wi 3 -f 1 -t 1"`. These are single-thread figures from a laptop and are indicative only. Re-measure on your production hardware.
+
+| | signature checked | verified-token cache hit |
+|---|---|---|
+| RS256 access token | ~15k/s | ~135k/s |
+| ES256 access token | ~2k/s | ~135k/s |
+
+Clients reuse an access token for its whole lifetime, so in steady state almost every request is a cache hit.
+
+**DPoP proofs are the exception.** The client mints a new proof for every request, so the proof's signature (usually ES256) is checked on every request and can't be cached. When you run several nodes, each proof also costs one Redis `SET NX` for replay protection. Budget roughly one core per few thousand DPoP requests per second, and size Redis for one write per DPoP request.
+
+### End-to-end load test
+
+`bench/loadtest/run.sh` runs the packaged service (`target/universal/stage`) against throwaway local Postgres, Redis and an HTTPS JWKS endpoint, and drives it with `wrk`. It needs `postgres`, `redis-server`, `wrk`, `openssl`, `keytool` and `python3`, and cleans up after itself. Knobs: `DURATION`, `THREADS`, `CONNS`, `TOKENS`, `PROOFS`, `SERVER_OPTS`. `MODE=serve` starts everything and holds it, for profiling.
+
+Results on an 8-core Apple M1 (4 performance + 4 efficiency cores), with `wrk` on the same machine (4 threads, 48 connections, 20 s runs), 1% trace sampling and cats-effect tracing off. **Every scenario completed with zero socket errors and zero non-2xx responses.**
+
+| Scenario | Req/s | p50 | p99 |
+|---|---|---|---|
+| `GET /health`, no auth (HTTP ceiling) | 94.6k | 0.44 ms | 14 ms |
+| Bearer, one token reused (cache hit) | 67.0k | 0.63 ms | 8.8 ms |
+| Bearer, 20k distinct tokens (caches + Redis) | 44.9k | 0.97 ms | 6.5 ms |
+| Bearer, 20k distinct tokens, verified-token cache **off** | 21.0k | 2.1 ms | 31 ms |
+| DPoP, no server nonce | 6.8k | 6.2 ms | 37 ms |
+| DPoP, stateless nonce (`nonce.mode = stateless`) | 5.9k | 6.9 ms | 83 ms |
+| DPoP, Redis single-use nonce (`nonce.mode = redis`) | 6.1k | 7.2 ms | 33 ms |
+
+These numbers are a floor. The load generator takes CPU from the server, half the cores are efficiency cores, and background processes cause ±15% run-to-run variation. A bare Ember server that returns `200 ok` (`bench.BareEmber`) peaks at about 90–95k/s on the same machine, so no auth configuration can beat that here. Re-run on production hardware, with the generator on a separate machine, before sizing a fleet.
+
+**Keep connections per node below 50.** fs2 binds the listening socket with the JDK's default backlog of 50, and neither Ember nor fs2 exposes a setting for it. If more than 50 connections arrive at once, the accept queue overflows. The kernel then resets the extra connections, the client reconnects, and the reconnects overflow the queue again. At 200 connections this showed up as thousands of resets per second. Packet capture confirmed that the server kernel sent the RSTs, and that the application never saw those connections. Throughput doesn't improve beyond a few dozen connections anyway. In production, cap the load balancer's connection pool per node accordingly.
+
+**Ember is the fastest http4s backend here.** http4s-netty 0.7.1 (`bench.BareNetty`, native kqueue transport) peaked at about 62–67k/s where bare Ember reached 106–113k/s on the same machine. Netty itself is fast, but converting each request and response between Netty and http4s streams costs more than Ember's native fs2 path. Netty's one advantage is its 1024 accept backlog.
+
+**Ember settings don't move throughput.** Receive buffer size, `TCP_NODELAY`, idle and header timeouts, `maxConnections` and the socket polling backend were all tested; none helped. What mattered:
+
+| Change | Effect on `/me` |
+|---|---|
+| cats-effect tracing off (`-Dcats.effect.tracing.mode=none`, the packaged default) | about +20%. Tracing was about 15% of CPU. |
+| Cache the built `AuthContext`, not just the claims | Validation CPU down from 4.8% to 2.7% (no regex refinements on a cache hit) |
+| Thread-local RNG for request IDs, fast `Authorization` scan | Removes the shared `SecureRandom` lock and parser-combinator parsing from the request path |
+
+### DPoP replay defence: the stateless and stateful flows
+
+A DPoP proof is a small JWT the client signs for each request with its own key (RFC 9449). It carries the method (`htm`), URL (`htu`), time (`iat`), a hash of the access token (`ath`) and a unique id (`jti`). The threat is **replay**: someone who captures a proof in transit sends it again. Two mechanisms stop that, and `auth.dpop.nonce.mode` (`DPOP_NONCE_MODE`) decides where their state lives when several nodes sit behind a load balancer:
+
+- **Server nonce (RFC 9449 §8).** The server hands the client a nonce, and each proof must include one. This proves the proof was made recently, by the server's clock rather than the client's.
+- **jti single use (RFC 9449 §11.1).** Each proof id is accepted once. This is what actually stops a proof being used twice.
+
+`MultiNodeMain` wires the mode. Everything else, from the header checks to the signature check and the response, is shared by both.
+
+#### Steps common to both modes
+
+For each request with `Authorization: DPoP <token>` and a `DPoP: <proof>` header:
+
+1. The access token is validated like any other: signature, `iss`, `aud`, `exp`, revocation. It must carry a `cnf.jkt` binding.
+2. There must be exactly one `DPoP` header, at most 4096 characters, that parses as a JWT.
+3. **Nonce check**, which is where the modes differ (below). A missing, unknown or expired nonce gets `401` with `WWW-Authenticate: DPoP error="use_dpop_nonce"` and a fresh `DPoP-Nonce` header. The client signs a new proof with that nonce and retries once.
+4. **Proof verification** (Nimbus):
+   - `typ` is `dpop+jwt`;
+   - the signature verifies against the JWK embedded in the proof, with an allowed algorithm (ES256 or PS256);
+   - that key's thumbprint equals the token's `cnf.jkt`;
+   - `htm` and `htu` match this request;
+   - `iat` is within 60 s (plus 30 s skew);
+   - `ath` matches the token;
+   - the `nonce` claim equals the nonce accepted in step 3.
+5. **jti check.** Only a proof that passed step 4 spends its `jti`. The key is `SHA-256(cnf.jkt + " " + jti)`, kept for 90 s (max age plus skew). A forged proof is rejected before it can use up a real client's `jti`.
+6. **Nonce rotation.** Every response to a DPoP request carries a fresh `DPoP-Nonce`, including errors. The client uses it for its next proof and never needs a challenge round trip after the first.
+
+If a store the check depends on fails or times out (`redis.command-timeout`), the request gets `503`, never `500` and never an accept.
+
+#### `stateless` (default)
+
+```
+client                         any node                                Redis
+  |-- GET /me, proof(nonce=N) -->|                                        |
+  |                              | 3. AES-GCM decrypt N with shared key   |
+  |                              |    -> issue time; fresh if < 5 min old |
+  |                              | 4. verify proof (CPU)                  |
+  |                              | 5. SET dpop:jti:<hash> NX EX 120 ----->|  1 round trip
+  |                              |<----------- OK (or nil = replay) ------|
+  |                              | 6. new nonce = AES-GCM(now)            |
+  |<-- 200, DPoP-Nonce: N2 ------|                                        |
+```
+
+- **The nonce is the issue time, sealed with AES-GCM** under a key every node shares (`DPOP_NONCE_KEY`), in the form `base64url(IV ‖ ciphertext ‖ tag)`, about 51 characters. Any node can check any node's nonce with no store: the tag proves the server made it, and the decrypted time proves it is recent (within `nonce.lifetime`, 5 minutes, with 5 s tolerance for future times between node clocks).
+- **The nonce is not consumed.** A client may reuse it for its whole lifetime, including on concurrent requests.
+- **Replay is stopped by the jti set, which lives in Redis** (`RedisDpopJtiStore`, an atomic `SET NX`). A proof replayed to *any* node finds its `jti` already spent and gets `401 invalid_dpop_proof`.
+- **Key rotation:** put the new key in `key` and the old one in `previous-keys`. Old nonces keep validating until they expire (5 min), then you drop the old key.
+
+#### `redis` (stateful)
+
+```
+client                         any node                                Redis
+  |-- GET /me, proof(nonce=N) -->|                                        |
+  |                              | 3. DEL dpop:nonce:N ------------------>|  round trip 1
+  |                              |<----------- 1 (or 0 = unknown/used) ---|
+  |                              | 4. verify proof (CPU)                  |
+  |                              | 5. jti check, in this node's memory    |
+  |                              | 6. N2 = random; SET dpop:nonce:N2 EX 300 ->|  round trip 2
+  |<-- 200, DPoP-Nonce: N2 ------|                                        |
+```
+
+- **The nonce is a random value stored in Redis** for 5 minutes (`RedisDpopNonceStore`). Checking it *deletes* it, and the `DEL` result says whether it existed, so check-and-consume is one atomic step.
+- **Each nonce works exactly once, cluster-wide.** A replayed proof carries a nonce that is already gone, so it gets a `use_dpop_nonce` challenge on any node. That's why the `jti` set can stay per-node here: a replay never gets past step 3.
+- **Every response mints and stores a new nonce.** One the client never uses stays in Redis until it expires.
+
+#### Why `stateless` is the default
+
+| | `stateless` | `redis` |
+|---|---|---|
+| Redis operations per DPoP request | **1** | 2 (consume + mint) |
+| Redis keys held | one per request, for 120 s | one per response. A nonce the client uses is deleted at once; unused ones (from a client's last response, or responses it didn't take the nonce from) stay for 300 s |
+| Nonce check cost | a few µs of AES on the node | a network round trip |
+| A client sending requests in parallel | **fine**: one nonce covers all of them | each request needs its own nonce, so the extras get `401 use_dpop_nonce` and retry with a round trip |
+| A client whose proof fails a check | its nonce stays usable | its nonce is already consumed; it needs the rotated one or a new challenge |
+| Nodes need | a shared AES key | a shared Redis |
+| Redis unavailable | `503` | `503` |
+| Guarantee | proofs are single-use; nonces are fresh (< 5 min) | proofs are single-use; nonces are single-use |
+
+Measured on one node, they run at the same speed: 5.9k vs 6.1k DPoP requests/s, within noise. The ES256 check dominates, and Redis round trips overlap with other work. The load test pre-fetches one nonce per proof, so it hides the parallel-request penalty that real clients of `redis` pay.
+
+`stateless` gives the same replay protection (every proof usable once, on any node) for half the Redis traffic, less Redis memory, and no penalty for parallel requests. Choose `redis` only if a policy requires that each *nonce*, not just each proof, can be used once. One caveat: in `redis` mode the nonce is consumed *before* the proof's signature is checked (step 3 comes before step 4). Someone who learned a client's nonce could burn it with a forged proof, costing that client one extra challenge. Nonces only travel over TLS, so this is minor. `stateless` doesn't have the issue, because it never consumes nonces.
+
+### What keeps a node fast and safe under load
+
+| Mechanism | Setting | Trade-off |
+|---|---|---|
+| Verified-token cache: skips signature checks for reused tokens | `auth.cache.verified-tokens`, `verified-token-ttl` | None for revocation or expiry: `exp` is honoured and revocation runs on every request. One real difference: a token signed by a key the issuer has *withdrawn* keeps passing for up to the TTL (5 min) after the node's next key refresh. That comes **on top of** the up-to-15-minute JWKS cache, not within it. |
+| Revocation cache: each node reuses a denylist answer | `auth.cache.revocation-ttl` (`AUTH_REVOCATION_CACHE_TTL`) | **This setting is the worst-case delay before a revocation takes effect on a node** (1 s by default). Set it to `0` to ask Redis on every request. |
+| Redis command timeout | `redis.command-timeout` | A stalled Redis fails the request closed (`503`) instead of hanging it. |
+| DPoP replay check runs effectfully | `DpopJtiStore` | No thread waits on Redis. A store failure returns `503`. |
+| Load shedding | `http.max-in-flight` (`HTTP_MAX_IN_FLIGHT`) | Requests over the cap get an immediate `503` + `Retry-After: 1`. Probe paths are exempt. The `http.server.shed` counter reports shed requests. |
+| Request timeout | `http.request-timeout` | A response that takes longer becomes a `503`. |
+| Introspection coalescing | automatic | Concurrent cache misses for one token make a single call to the authorization server. |
+| Log rate limiting and async log writer | `AuthEvents.slf4j(maxLinesPerSecond)` | Rejection and error lines are capped at 100/s each (the next line reports how many were dropped). Log writes never block a request. The `auth.decisions` metric still counts every decision. |
+
+### Deploying
+
+Build the image with `sbt --client Docker/publishLocal` (or `Universal/packageBin` for a zip). The package:
+
+- starts `app.MultiNodeMain`, the load-balanced setup. Give every node the same `DPOP_NONCE_KEY`, and size Redis (cluster or replicas) for your DPoP write rate.
+- runs as a non-root user (uid 1001) on `eclipse-temurin:21-jre`, listening on 8080.
+- sizes the heap from the container memory limit (`MaxRAMPercentage=75`) and exits on out-of-memory, so the orchestrator restarts the node. Allow for the caches: roughly 1–2 KB per cached verified token, and about 100 B per in-memory DPoP jti.
+- enables OpenTelemetry autoconfiguration and **samples 1% of new traces** by default (`OTEL_TRACES_SAMPLER=parentbased_traceidratio`, `OTEL_TRACES_SAMPLER_ARG=0.01`; override either through the environment). Point `OTEL_EXPORTER_OTLP_ENDPOINT` at your collector.
+- reads the log level from `LOG_LEVEL` (default `info`).
+- turns off cats-effect fiber tracing (`-Dcats.effect.tracing.mode=none`), which cost about 15% of CPU. Exceptions lose their async stack-trace enrichment; add `-Dcats.effect.tracing.mode=cached` to `JAVA_OPTS` while debugging.
+
+**Startup.** The node fetches the issuer's signing keys before it binds, and refuses to start if it can't. A node that can't verify tokens must never report ready. After startup, keys are refreshed in the background ahead of expiry, so no request waits on a routine refresh.
+
+**Shutdown.** On SIGTERM the node:
+
+1. fails `/ready` while it keeps serving, for `http.drain-delay` (5 s), so the load balancer stops routing to it;
+2. stops accepting connections and lets in-flight requests finish, for up to `http.shutdown-timeout` (20 s);
+3. closes Redis, the database pool and the key refresher.
+
+Keep `drain-delay + shutdown-timeout` below the platform's termination grace period (Kubernetes default: 30 s).
+
+**Capacity.** Size `http.max-in-flight` and `http.max-connections` from a load test. By Little's law, in-flight ≈ throughput × latency; set the cap a few times above the healthy steady state. Keep `max-connections` high enough for your load balancer's keep-alive pool, and within the process's file-descriptor limit.
+
+### Load balancer
+
+`deploy/haproxy/haproxy.cfg` is a reference HAProxy 3.x configuration. It:
+
+- terminates TLS (the service rebuilds DPoP `htu` as `https://<Host><path>`, so the proxy must pass `Host` through unchanged, which HAProxy does by default);
+- caps each node at 40 connections (`maxconn 40`), below Ember's 50-connection accept limit, and queues the excess. Clients can open any number of connections without the node resetting any. With several HAProxy instances in front of the same nodes, divide the 40 between them;
+- health-checks `/ready` every 2 s, so a draining node is out of rotation within its 5 s `drain-delay`;
+- retries only requests that never reached a node (`retry-on conn-failure`), so a non-idempotent request never runs twice;
+- exposes Prometheus metrics on `127.0.0.1:8404/metrics`.
+
+Measured on one machine with two nodes behind HAProxy, 100 client connections, and one node sent SIGTERM mid-run:
+
+| | Requests | Failed |
+|---|---|---|
+| With the readiness drain (`http.drain-delay = 5s`) | 928,627 | 0 |
+| Without it (`0s`) | 1,140,480 | 10 (5 non-2xx, 5 timeouts) |
+
+Run HAProxy on its own machines. On an app node's cores it competes with the service: on one laptop, putting HAProxy in front roughly halved throughput (101k → 52–64k/s against a bare Ember server).
+
+**mTLS behind the proxy.** For RFC 8705 certificate-bound tokens, use the commented `bind` line (it requests client certificates and accepts self-signed ones), and set `AUTH_MTLS_FORWARDED_CERT_HEADER=X-Forwarded-Client-Cert` on the nodes. HAProxy first deletes any client-supplied copy of that header, then forwards the certificate from the TLS handshake as URL-encoded PEM. Enable the setting only behind a proxy that strips the header. If clients can reach a node directly, anyone holding a stolen token could supply its (public) certificate themselves. Unset (the default), certificate-bound tokens are rejected.
+
+### Metrics to watch
+
+| Metric | What it tells you |
+|---|---|
+| `auth.decisions` / `auth.challenges` | Every authentication outcome, by stable code |
+| `auth.validation.duration` | Validation latency, by outcome |
+| `auth.token_cache.lookups{result}` | Verified-token cache hit ratio. It should sit near 100% in steady state. |
+| `auth.token_cache.evictions` | Non-zero in steady state means `auth.cache.verified-tokens` is smaller than your active token population |
+| `auth.denylist.duration` | Real Redis round trips only (the revocation cache sits above it) |
+| `auth.jwks.events`, `auth.jwks.fetch.duration` | Key refresh, retries and outage fallbacks |
+| `http.server.shed` | Requests refused by load shedding. Sustained non-zero means add nodes. |

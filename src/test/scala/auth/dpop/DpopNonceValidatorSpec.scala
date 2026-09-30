@@ -6,6 +6,7 @@ import java.util.Base64
 
 import cats.effect.kernel.Resource
 import cats.effect.IO
+import cats.syntax.all.*
 
 import auth.dpop.{DpopNonceValidator, NonceValidationResult}
 import javax.crypto.spec.GCMParameterSpec
@@ -105,14 +106,24 @@ class DpopNonceValidatorSpec extends DpopBaseSuite {
     }
   }
 
-  test("a tampered nonce fails the AEAD tag check") {
+  test("flipping a bit anywhere in a nonce (IV, ciphertext or tag) fails the AEAD tag check") {
+    // Tamper with the decoded bytes, not the base64url text: the text's last
+    // character carries padding bits the decoder ignores, so editing it leaves
+    // the bytes unchanged for 1 nonce in 16 — which is not a tamper at all.
     for {
-      store  <- newStore
-      nonce  <- store.createNonce
-      raw     = nonce.value: String
-      flipped = raw.dropRight(1) + (if (raw.last == 'A') 'B' else 'A')
-      status <- store.validateNonce(Some(flipped))
-    } yield assertEquals(status, NonceStatus.Invalid)
+      store   <- newStore
+      nonce   <- store.createNonce
+      bytes    = Base64.getUrlDecoder.decode(nonce.value: String)
+      tampered = bytes.indices.toList.map { i =>
+                   val copy = bytes.clone()
+                   copy(i) = (copy(i) ^ 1).toByte
+                   Base64.getUrlEncoder.withoutPadding.encodeToString(copy)
+                 }
+      results <- tampered.traverse(t => store.validateNonce(Some(t)))
+    } yield {
+      assertEquals(results.size, bytes.length)
+      assertEquals(results.distinct, List(NonceStatus.Invalid))
+    }
   }
 
   test(

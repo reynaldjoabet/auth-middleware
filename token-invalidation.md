@@ -68,6 +68,58 @@ it adds the token identifier to its local invalidation cache/store.
 
 Subsequent requests containing that token are rejected.
 
+### Production flow
+
+What each piece does, and what the client gets back. [What every consumer must do](#what-every-consumer-must-do) explains the rules behind it.
+
+```mermaid
+flowchart LR
+    subgraph STS["Token service (STS)"]
+        change["Role change · password reset<br/>sign-out-everywhere · leaked token"]
+        pub["InvalidationPublisher<br/>acks=all, idempotent"]
+        change --> pub
+    end
+
+    subgraph K["Kafka · auth.token-invalidations"]
+        direction TB
+        p0["partition 0"]
+        p1["partition 1"]
+        p2["partition 2"]
+    end
+
+    pub -- "key jti:… or sub:…<br/>(one token or subject → one partition, in order)" --> K
+
+    subgraph API["Every instance of every API (no consumer group)"]
+        direction TB
+        consumer["KafkaInvalidations<br/>assigns ALL partitions<br/>replays max-token-lifetime on start"]
+        store[("InvalidationStore (memory)<br/>jti → expires_at<br/>sub → issued_before")]
+        fresh["freshness check, every 1 s<br/>applied ≥ end offsets?"]
+        validator["AccessTokenValidator<br/>signature · iss · aud · exp"]
+        policy["requireAny(roles, scopes)"]
+        consumer --> store
+        fresh -. "markFresh" .-> store
+        validator -- "jti revoked?<br/>iat ≤ subject cut-off?" --> store
+        validator --> policy
+    end
+
+    K --> consumer
+    K -. "end offsets" .-> fresh
+
+    subgraph R["Response"]
+        direction TB
+        ok["200 → route"]
+        forbidden["403 insufficient_scope"]
+        unauthorized["401 invalid_token"]
+        unavailable["503 fail closed"]
+    end
+
+    client(["Client"]) -- "Authorization: Bearer …" --> validator
+    policy -- "role or scope held" --> ok
+    policy -- "neither held" --> forbidden
+    validator -- "invalid · expired · revoked" --> unauthorized
+    validator -- "store not caught up or stale" --> unavailable
+```
+
 ### Role Changes
 
 Adding role claims introduces an important lifecycle question.
@@ -121,12 +173,30 @@ Consumers reject every token for `u-7` whose `iat` is at or before 10:05. The ST
 
 With the example above:
 
-```text
-10:00  token issued, roles = [Manager]
-10:05  Manager removed; STS publishes SubjectInvalidated(u-7, issued_before=10:05)
-10:06  old token presented       -> 401 invalid_token (revoked)
-10:06  user signs in again       -> new token, iat 10:06, no Manager role
-10:06  new token presented       -> 403 insufficient_scope (valid, but lacks the role)
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant STS as Token service
+    participant K as Kafka
+    participant API as API instance<br/>(InvalidationStore)
+
+    U->>STS: sign in (10:00)
+    STS-->>U: token · iat 10:00 · roles [PayrollAdmin]
+    U->>API: GET /api/payroll/employees
+    API-->>U: 200 (role held)
+
+    Note over STS: 10:05 PayrollAdmin removed
+    STS->>K: SubjectInvalidated(sub=u-7, issued_before=10:05)
+    K-->>STS: ack (all in-sync replicas)
+    K->>API: applied within ~1 s, on every instance
+
+    U->>API: same token (10:06)
+    API-->>U: 401 invalid_token · revoked (iat ≤ cut-off)
+    U->>STS: sign in again
+    STS-->>U: token · iat 10:06 · no PayrollAdmin
+    U->>API: GET /api/payroll/employees
+    API-->>U: 403 insufficient_scope (valid token, neither role nor scope)
 ```
 
 `iat` has whole-second precision, so a token issued in the same second as the cut-off can't be placed before or after it. It counts as revoked: at worst a token minted just after the change is rejected once, and the client fetches another.
@@ -135,7 +205,7 @@ The `jti` form stays for revoking one specific token, such as a leaked one.
 
 ## What every consumer must do
 
-The diagram above leaves out some behaviours that decide whether revocation actually works.
+The workflow sketch at the top leaves out some behaviours that decide whether revocation actually works. The [production flow](#production-flow) shows where each one happens.
 
 **Every instance reads every partition.** If API A runs three instances in one consumer group, Kafka splits the partitions between them, and each instance sees only a third of the invalidations. Each instance must consume the whole topic. The implementation assigns itself every partition and uses no consumer group.
 
@@ -150,6 +220,29 @@ The diagram above leaves out some behaviours that decide whether revocation actu
 **The topic must exist.** The consumer never auto-creates it. With a mistyped topic name, an instance would otherwise follow a new empty topic, report ready, and never see a revocation.
 
 **Publish before you confirm.** The STS should report a revocation as done only after the broker has acknowledged the event (`acks=all`). Only then is it certain to reach every consumer.
+
+### An instance's view of the feed
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    state "Catching up<br/>/ready 503 · checks 503" as CatchingUp
+    state "Current<br/>/ready 200 · checks are map lookups" as Current
+    state "Stale<br/>/ready 503 · checks 503 (fail closed)" as Stale
+
+    [*] --> CatchingUp: start, replay from now − max-token-lifetime
+    CatchingUp --> Current: applied ≥ end offsets
+    Current --> Stale: unconfirmed for max-staleness
+    Stale --> Current: caught up again
+    CatchingUp --> CatchingUp: consumer failed, retry after retry-backoff
+```
+
+| Setting (`app.revocation.kafka`) | Default | What it controls |
+|---|---|---|
+| `max-token-lifetime` | 1 hour | How far back a starting instance replays the topic. Set it to the longest access-token lifetime the STS issues. Topic retention must be at least this long. |
+| `max-staleness` | 30 s | How long the copy may go unconfirmed before revocation checks fail closed |
+| `freshness-check-interval` | 1 s | How often end offsets are compared with what has been applied |
+| `retry-backoff` | 2 s | Wait before rebuilding a failed consumer |
 
 ## Wire format
 

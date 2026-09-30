@@ -6,7 +6,7 @@ import fs2.io.net.Network
 
 import auth.{AccessTokenAuth, AuthEvents, AuthTelemetry}
 import auth.accesstoken.AccessTokenValidator
-import auth.dpop.{DpopConfig, DpopNonceValidator, DpopVerifier}
+import auth.dpop.{DpopConfig, DpopJtiStore, DpopNonceValidator, DpopVerifier}
 import auth.revocation.{TokenDenylist, TokenIntrospection}
 import org.http4s.ember.client.EmberClientBuilder
 import org.http4s.ember.server.EmberServerBuilder
@@ -14,8 +14,6 @@ import org.http4s.server.Server as Http4sServer
 import org.slf4j.LoggerFactory
 import app.config.AppConfig
 import app.infra.postgres.Database
-import com.nimbusds.oauth2.sdk.dpop.verifiers.DPoPProofUse
-import com.nimbusds.oauth2.sdk.util.singleuse.SingleUseChecker
 import org.typelevel.otel4s.trace.Tracer
 
 object Server {
@@ -23,11 +21,10 @@ object Server {
   private val log = LoggerFactory.getLogger(getClass)
 
   /**
-    * @param singleUseChecker
-    *   DPoP proof `jti` single-use checker. Default `None` uses Nimbus's per-node in-memory checker
-    *   — correct and cheapest for a single node. Behind a load balancer, inject a shared-store
-    *   checker (see [[app.MultiNodeMain]]) so a replayed jti is caught on whichever node it lands
-    *   on.
+    * @param jtiStore
+    *   DPoP proof `jti` single-use store. Default `None` uses a per-node in-memory store — correct
+    *   and cheapest for a single node. Behind a load balancer, inject a shared store (see
+    *   [[app.MultiNodeMain]]) so a replayed jti is caught on whichever node it lands on.
     * @param nonceOverride
     *   explicit DPoP nonce validator; overrides the config-driven stateless default. Used for the
     *   alternative nonce-anchored replay posture (see [[app.MultiNodeMain]]).
@@ -44,7 +41,7 @@ object Server {
       denylist: TokenDenylist[F],
       events: AuthEvents[F],
       telemetry: AuthTelemetry[F] = AuthTelemetry.noop[F],
-      singleUseChecker: Option[SingleUseChecker[DPoPProofUse]] = None,
+      jtiStore: Option[DpopJtiStore[F]] = None,
       nonceOverride: Option[DpopNonceValidator[F]] = None
   ): Resource[F, Http4sServer] =
     for {
@@ -119,14 +116,14 @@ object Server {
         if (cfg.auth.dpop.enabled)
           // jti single-use anchors DPoP replay defence. `None` -> per-node
           // in-memory (one node sees every request, so that suffices); a
-          // multi-node deployment injects a shared-store checker so a replayed
-          // jti is rejected on whichever node the load balancer picks.
+          // multi-node deployment injects a shared store so a replayed jti is
+          // rejected on whichever node the load balancer picks.
           DpopVerifier
             .default[F](
               DpopConfig(),
               events,
               dpopNonceValidator = dpopNonceValidator,
-              singleUseChecker = singleUseChecker
+              jtiStore = jtiStore
             )
             .map(Some(_))
         else Resource.pure[F, Option[DpopVerifier[F]]](None)

@@ -2,7 +2,8 @@ package app.infra.redis
 
 import scala.concurrent.duration.*
 
-import cats.effect.Sync
+import cats.effect.syntax.temporal.*
+import cats.effect.Async
 import cats.syntax.all.*
 
 import auth.dpop.DpopNonceStore
@@ -22,21 +23,25 @@ import sage.commands.{Commands, SetExpiry}
   *
   * `mint` is `SET key "1" EX ttl`; `consume` is a single `DEL`, whose deleted count makes
   * check-and-consume atomic without scripting. Expiry is enforced by the key TTL.
+  *
+  * Both commands are bounded by `timeout`; a failure fails the DPoP request closed (`503`).
   */
-final class RedisDpopNonceStore[F[_]: Sync](
+final class RedisDpopNonceStore[F[_]: Async](
     client: Client[F, String],
+    timeout: FiniteDuration,
     ttl: FiniteDuration = 5.minutes,
     prefix: String = "dpop:nonce:"
 ) extends DpopNonceStore[F] {
 
   def mint: F[DpopNonce] =
-    Sync[F].delay(new Nonce().getValue).flatMap { value =>
+    Async[F].delay(new Nonce().getValue).flatMap { value =>
       client
         .run(Commands.set(prefix + value, "1", SetExpiry.In(ttl)))
+        .timeout(timeout)
         .as(DpopNonce.applyUnsafe(value))
     }
 
   def consume(presented: String): F[Boolean] =
-    client.run(Commands.del(prefix + presented)).map(_ > 0L)
+    client.run(Commands.del(prefix + presented)).timeout(timeout).map(_ > 0L)
 
 }

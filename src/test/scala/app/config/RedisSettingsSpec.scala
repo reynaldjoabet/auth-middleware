@@ -19,7 +19,8 @@ class RedisSettingsSpec extends FunSuite {
       clientName = "auth",
       connectTimeout = 1.second,
       pingInterval = 1.second,
-      pingTimeout = 1.second
+      pingTimeout = 1.second,
+      commandTimeout = 250.millis
     )
 
   test(

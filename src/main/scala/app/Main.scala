@@ -27,7 +27,7 @@ object Main extends IOApp.Simple {
   private def app(cfg: AppConfig): Resource[IO, Http4sServer] =
     for {
       redis   <- SageClient.resource(cfg.redis.toSageConfig)
-      denylist = RedisTokenDenylist[IO](redis)
+      denylist = RedisTokenDenylist[IO](redis, cfg.redis.commandTimeout)
       // GlobalOpenTelemetry, autoconfigured via the
       // -Dotel.java.global-autoconfigure.enabled=true javaOption; noop when no
       // exporter is configured, so local runs cost nothing.

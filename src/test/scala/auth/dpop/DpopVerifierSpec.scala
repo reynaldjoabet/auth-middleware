@@ -14,8 +14,6 @@ import com.nimbusds.jose.{JWSAlgorithm, JWSHeader}
 import com.nimbusds.jose.crypto.ECDSASigner
 import com.nimbusds.jose.JOSEObjectType
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
-import com.nimbusds.oauth2.sdk.dpop.verifiers.DPoPProofUse
-import com.nimbusds.oauth2.sdk.util.singleuse.{AlreadyUsedException, SingleUseChecker}
 import org.http4s.HttpApp
 import org.http4s.Method
 import org.http4s.Request
@@ -329,33 +327,33 @@ class DpopVerifierSpec extends DpopBaseSuite {
     )
   }
 
-  // -- Injected shared-store single-use checker (multi-node replay) -----------
+  // -- Injected shared jti store (multi-node replay) ---------------------------
 
   /**
-    * A trivial shared `SingleUseChecker`, standing in for a Redis-backed store: two verifier
-    * instances (two "nodes") pointed at the same map see each other's consumed jtis.
+    * A trivial shared [[DpopJtiStore]], standing in for a Redis-backed one: two verifier instances
+    * (two "nodes") pointed at the same map see each other's spent jtis.
     */
-  private def sharedChecker(): SingleUseChecker[DPoPProofUse] = {
+  private def sharedStore(): DpopJtiStore[IO] = {
     val seen =
       new java.util.concurrent.ConcurrentHashMap[String, java.lang.Boolean]()
-    (use: DPoPProofUse) =>
-      val key = use.getIssuer.getValue + ":" + use.getJWTID.getValue
-      if (seen.putIfAbsent(key, java.lang.Boolean.TRUE) != null)
-        throw new AlreadyUsedException("jti already used")
+    new DpopJtiStore[IO] {
+      def markUsed(key: String, retention: FiniteDuration): IO[Boolean] =
+        IO(seen.putIfAbsent(key, java.lang.Boolean.TRUE) == null)
+    }
   }
 
   /**
-    * A middleware "node" whose verifier uses the supplied single-use checker (or the default
-    * per-node in-memory one when `None`).
+    * A middleware "node" whose verifier uses the supplied jti store (or the default per-node
+    * in-memory one when `None`).
     */
   private def node(
-      checker: Option[SingleUseChecker[DPoPProofUse]]
+      store: Option[DpopJtiStore[IO]]
   ): Resource[IO, HttpApp[IO]] =
     DpopVerifier
       .default[IO](
         DpopConfig(),
         AuthEvents.noop[IO],
-        singleUseChecker = checker
+        jtiStore = store
       )
       .map { verifier =>
         AccessTokenAuth
@@ -369,11 +367,11 @@ class DpopVerifierSpec extends DpopBaseSuite {
       }
 
   test(
-    "a shared single-use checker catches a proof replayed onto another node"
+    "a shared jti store catches a proof replayed onto another node"
   ) {
     val token   = sign(dpopBoundClaims())
     val proof   = dpopProof("GET", accountsUri.renderString, token)
-    val shared  = sharedChecker()
+    val shared  = sharedStore()
     val cluster = for {
       a <- node(Some(shared))
       b <- node(Some(shared))
@@ -382,14 +380,14 @@ class DpopVerifierSpec extends DpopBaseSuite {
       for {
         first <- nodeA.run(dpopRequest(token, proof))
         _      = assertEquals(first.status, Status.Ok)
-        // Same proof to a *different* node: rejected, checker is shared.
+        // Same proof to a *different* node: rejected, the store is shared.
         replay <- nodeB.run(dpopRequest(token, proof))
         _      <- assertDpopRejected(replay)
       } yield ()
     }
   }
 
-  test("the default per-node checker does NOT catch a cross-node replay") {
+  test("the default per-node store does NOT catch a cross-node replay") {
     val token   = sign(dpopBoundClaims())
     val proof   = dpopProof("GET", accountsUri.renderString, token)
     val cluster = for {
@@ -400,11 +398,53 @@ class DpopVerifierSpec extends DpopBaseSuite {
       for {
         first <- nodeA.run(dpopRequest(token, proof))
         _      = assertEquals(first.status, Status.Ok)
-        // Each node has its own in-memory checker, so node B never saw the jti —
-        // the gap the injected shared-store checker closes.
+        // Each node has its own in-memory store, so node B never saw the jti —
+        // the gap the injected shared store closes.
         replay <- nodeB.run(dpopRequest(token, proof))
         _       = assertEquals(replay.status, Status.Ok)
       } yield ()
+    }
+  }
+
+  test("a replayed proof is rejected by the default in-memory store") {
+    val token = sign(dpopBoundClaims())
+    val proof = dpopProof("GET", accountsUri.renderString, token)
+    node(None).use { a =>
+      for {
+        first  <- a.run(dpopRequest(token, proof))
+        _       = assertEquals(first.status, Status.Ok)
+        replay <- a.run(dpopRequest(token, proof))
+        _      <- assertDpopRejected(replay)
+      } yield ()
+    }
+  }
+
+  test("an unreachable jti store fails closed with 503, never accepting the proof") {
+    val token  = sign(dpopBoundClaims())
+    val proof  = dpopProof("GET", accountsUri.renderString, token)
+    val broken = new DpopJtiStore[IO] {
+      def markUsed(key: String, retention: FiniteDuration): IO[Boolean] =
+        IO.raiseError(new java.util.concurrent.TimeoutException("redis stalled"))
+    }
+    node(Some(broken)).use(
+      _.run(dpopRequest(token, proof))
+        .map(r => assertEquals(r.status, Status.ServiceUnavailable))
+    )
+  }
+
+  test("a proof that fails verification does not spend its jti") {
+    val token = sign(dpopBoundClaims())
+    val jti   = UUID.randomUUID().toString
+    val good  = dpopProof("GET", accountsUri.renderString, token, jti = jti)
+    // Same jti, wrong method: rejected by Nimbus before the store is touched,
+    // so the legitimate proof carrying that jti still goes through.
+    val forged = dpopProof("POST", accountsUri.renderString, token, jti = jti)
+    node(Some(sharedStore())).use { a =>
+      for {
+        bad <- a.run(dpopRequest(token, forged))
+        _   <- assertDpopRejected(bad)
+        ok  <- a.run(dpopRequest(token, good))
+      } yield assertEquals(ok.status, Status.Ok)
     }
   }
 

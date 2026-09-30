@@ -220,10 +220,16 @@ object AccessTokenValidator {
         case None =>
           checkIntrospection(token, claims)
         case Some(jti) =>
-          denylist.isRevoked(jti).flatMap {
-            case true =>
+          // A store we cannot reach proves nothing: fail closed with 503.
+          denylist.isRevoked(jti).attempt.flatMap {
+            case Right(true) =>
               reject(AuthError.InvalidToken.Revoked, s"jti $jti is denylisted")
-            case false => checkIntrospection(token, claims)
+            case Right(false) => checkIntrospection(token, claims)
+            case Left(e)      =>
+              reject(
+                AuthError.ValidationUnavailable,
+                s"revocation store unavailable: ${e.getMessage}"
+              )
           }
       }
 

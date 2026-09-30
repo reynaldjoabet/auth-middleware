@@ -6,8 +6,6 @@ import cats.effect.{IO, IOApp, Resource}
 import cats.effect.unsafe.IORuntimeConfig
 
 import auth.{AuthEvents, AuthTelemetry}
-import com.nimbusds.oauth2.sdk.dpop.verifiers.DPoPProofUse
-import com.nimbusds.oauth2.sdk.util.singleuse.SingleUseChecker
 import org.http4s.server.Server as Http4sServer
 import org.slf4j.LoggerFactory
 import org.typelevel.otel4s.oteljava.OtelJava
@@ -15,7 +13,7 @@ import org.typelevel.otel4s.trace.Tracer
 import sage.backend.SageClient
 import app.config.{AppConfig, AppConfigLoader}
 import app.http.Server
-import app.infra.redis.{RedisDpopSingleUseChecker, RedisTokenDenylist}
+import app.infra.redis.{RedisDpopJtiStore, RedisTokenDenylist}
 
 /**
   * Composition root for a **multi-node, load-balanced** deployment (the FAPI 2.0 production
@@ -84,8 +82,8 @@ import app.infra.redis.{RedisDpopSingleUseChecker, RedisTokenDenylist}
   *   - '''RedisTokenDenylist''' `[SHARED]` — RS-side revocation. A token revoked on one node
   *     (compromise, off-boarding, fraud hold) is rejected on all of them at once, not after it
   *     expires. Hot path: one `EXISTS`.
-  *   - '''RedisDpopSingleUseChecker''' `[SHARED]` — cluster-wide single-use of the proof `jti` via
-  *     atomic `SET NX`. This is what makes DPoP replay defence hold behind a load balancer.
+  *   - '''RedisDpopJtiStore''' `[SHARED]` — cluster-wide single-use of the proof `jti` via atomic
+  *     `SET NX`. This is what makes DPoP replay defence hold behind a load balancer.
   *   - '''Stateless nonce (shared key)''' `[SHARED KEY]` — freshness only, wired in [[Server]] from
   *     `dpop.nonce.key`. No store, hence no per-proof Redis round trip; the key must be the same on
   *     every node.
@@ -110,16 +108,14 @@ object MultiNodeMain extends IOApp.Simple {
       redis <- SageClient.resource(cfg.redis.toSageConfig)
 
       // Distributed revocation: reject a revoked jti on every node at once.
-      denylist = RedisTokenDenylist[IO](redis)
+      denylist = RedisTokenDenylist[IO](redis, cfg.redis.commandTimeout)
 
       // The cross-node replay anchor: a shared, single-use jti set. Only when
-      // DPoP is on — otherwise there is nothing to check and no Dispatcher to
-      // spin up. Nonces stay stateless (Server builds them from the shared key).
-      jtiChecker <-
-        if (cfg.auth.dpop.enabled)
-          RedisDpopSingleUseChecker.resource[IO](redis).map(Some(_))
-        else
-          Resource.pure[IO, Option[SingleUseChecker[DPoPProofUse]]](None)
+      // DPoP is on — otherwise there is nothing to check. Nonces stay stateless
+      // (Server builds them from the shared key).
+      jtiStore = Option.when(cfg.auth.dpop.enabled)(
+                   RedisDpopJtiStore[IO](redis, cfg.redis.commandTimeout)
+                 )
 
       // Logs + OpenTelemetry metrics and traces. autoconfigure is a no-op with
       // no exporter.
@@ -141,7 +137,7 @@ object MultiNodeMain extends IOApp.Simple {
                   denylist,
                   events,
                   telemetry,
-                  singleUseChecker = jtiChecker
+                  jtiStore = jtiStore
                 )
     } yield server
 

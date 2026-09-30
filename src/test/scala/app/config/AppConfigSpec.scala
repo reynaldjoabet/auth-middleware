@@ -56,6 +56,7 @@ class AppConfigSpec extends FunSuite {
             connect-timeout = 10 seconds
             ping-interval = 60 seconds
             ping-timeout = 30 seconds
+            command-timeout = 250 milliseconds
           }
         }
       """)

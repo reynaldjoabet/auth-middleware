@@ -64,7 +64,10 @@ final case class RedisSettings(
     clientName: String :| Not[Blank],
     connectTimeout: FiniteDuration,
     pingInterval: FiniteDuration,
-    pingTimeout: FiniteDuration
+    pingTimeout: FiniteDuration,
+    // Upper bound on one hot-path command (denylist EXISTS, DPoP jti SET NX). A
+    // command past it fails the request closed (503) instead of hanging it.
+    commandTimeout: FiniteDuration
 ) derives ConfigReader {
 
   // Cross-field invariants that a single-field refinement can't express. These

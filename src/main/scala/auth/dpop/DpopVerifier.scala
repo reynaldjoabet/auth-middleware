@@ -18,14 +18,11 @@ import com.nimbusds.jwt.SignedJWT
 import com.nimbusds.oauth2.sdk.dpop.verifiers.{
   AccessTokenValidationException,
   DPoPIssuer,
-  DPoPProofUse,
   DPoPProtectedResourceRequestVerifier,
-  InMemoryDPoPSingleUseChecker,
   InvalidDPoPProofException
 }
 import com.nimbusds.oauth2.sdk.dpop.JWKThumbprintConfirmation
 import com.nimbusds.oauth2.sdk.token.DPoPAccessToken
-import com.nimbusds.oauth2.sdk.util.singleuse.SingleUseChecker
 import com.nimbusds.openid.connect.sdk.Nonce
 import org.http4s.headers.Host
 import org.http4s.Request
@@ -166,67 +163,66 @@ object DpopVerifier {
   private val NonceClaim = "nonce"
 
   /**
+    * Store key for a spent jti: base64url(SHA-256(thumbprint + " " + jti)). Both parts are
+    * client-influenced, so hashing gives a fixed-length, injection-safe key; the thumbprint is
+    * base64url (no space), so the separator keeps distinct pairs from colliding.
+    */
+  private[dpop] def jtiKey(thumbprint: String, jti: String): String =
+    Base64URL
+      .encode(sha256((thumbprint + " " + jti).getBytes(StandardCharsets.UTF_8)))
+      .toString
+
+  /**
     * Production verifier, delegating the cryptographic and claims checks to the Nimbus SDK's
     * [[DPoPProtectedResourceRequestVerifier]].
     *
     * Replay protection has two layers:
-    *   - jti single-use: defaults to Nimbus's in-memory checker, which is per-node only. Behind a
-    *     load balancer pass a `singleUseChecker` backed by a shared store (e.g. Redis) so a
-    *     replayed proof is caught whichever node it lands on. A supplied checker is owned by the
-    *     caller; only the default in-memory one is created and shut down by this `Resource`.
+    *   - jti single-use via a [[DpopJtiStore]], checked as an effect *after* Nimbus has verified
+    *     the proof (Nimbus's own synchronous checker is disabled). Defaults to a per-node in-memory
+    *     store. Behind a load balancer pass a shared store (e.g. Redis) so a replayed proof is
+    *     caught whichever node it lands on. A store failure fails closed as `503`.
     *   - `dpopNonceValidator`: when supplied, RS-provided nonces (RFC 9449 §8-9) are *required* on
     *     every proof. This is the FAPI 2.0 fix for DPoP Proof Replay — jti single-use alone cannot
     *     stop a network attacker who blocks the honest request, since the RS never sees the
     *     original. Leave it `None` only where mTLS binding or a lower risk tier applies.
     *
-    * Returns a [[cats.effect.Resource]]: when it owns the default in-memory checker, that checker
-    * starts a background purge timer thread stopped on release. Acquire the verifier once at
-    * startup and reuse it across requests.
+    * Acquire the verifier once at startup and reuse it across requests.
     *
-    * @param singleUseChecker
-    *   the DPoP proof `jti` single-use checker. `None` (default) creates and owns an in-memory,
-    *   per-node checker; `Some` injects a shared-store
-    *   [[com.nimbusds.oauth2.sdk.util.singleuse.SingleUseChecker]] for multi-node deployments
-    *   (caller-owned lifecycle).
+    * @param jtiStore
+    *   the DPoP proof `jti` single-use store. `None` (default) creates a per-node in-memory one;
+    *   `Some` injects a shared store for multi-node deployments.
     */
   def default[F[_]: Sync](
       config: DpopConfig,
       events: AuthEvents[F],
       dpopNonceValidator: Option[DpopNonceValidator[F]] = None,
-      singleUseChecker: Option[SingleUseChecker[DPoPProofUse]] = None
+      jtiStore: Option[DpopJtiStore[F]] = None
   ): Resource[F, DpopVerifier[F]] =
     Resource
-      .make(
+      .eval(jtiStore.fold(DpopJtiStore.inMemory[F])(Sync[F].pure))
+      .evalMap { store =>
         Sync[F].delay {
-          val retention = (config.proofMaxAge + config.clockSkew).toSeconds
           // Nimbus mutates the algorithm set (retainAll) during construction, so
           // it must be a mutable java.util.Set — a wrapped immutable Scala Set
           // would throw UnsupportedOperationException.
           val algs = new java.util.LinkedHashSet[JWSAlgorithm](
             config.allowedAlgorithms.asJava
           )
-          // Own an in-memory checker only when the caller supplies none; a
-          // supplied (e.g. shared-store) checker has a caller-managed lifecycle
-          // and must not be shut down here. Only the owned one starts a purge
-          // timer thread that needs stopping on release.
-          val ownedInMemory: Option[InMemoryDPoPSingleUseChecker] =
-            Option.when(singleUseChecker.isEmpty)(
-              new InMemoryDPoPSingleUseChecker(retention, retention)
-            )
-          val checker: SingleUseChecker[DPoPProofUse] =
-            singleUseChecker.orElse(ownedInMemory).get
-          val verifier = new DPoPProtectedResourceRequestVerifier(
+          // `null` single-use checker: Nimbus then skips jti tracking, which
+          // `store` does effectfully once the proof has verified.
+          val nimbus = new DPoPProtectedResourceRequestVerifier(
             algs,
             config.clockSkew.toSeconds,
             config.proofMaxAge.toSeconds,
-            checker
+            null
           )
-          (verifier, ownedInMemory)
+          (nimbus, store)
         }
-      ) { case (_, ownedInMemory) =>
-        ownedInMemory.fold(Sync[F].unit)(c => Sync[F].delay(c.shutdown()))
       }
-      .map { case (nimbus, _) =>
+      .map { case (nimbus, store) =>
+        // A spent jti must outlive every instant at which its proof could still
+        // be accepted: max age plus skew on the iat check.
+        val retention = config.proofMaxAge + config.clockSkew
         // Alias: inside the anonymous class `dpopNonceValidator` is the trait member, which
         // would self-reference the parameter it is meant to expose.
         val defaultDpopNonceValidator = dpopNonceValidator
@@ -283,37 +279,45 @@ object DpopVerifier {
                           )
                         case Some(validator) =>
                           val presented = nonceClaimOf(proof)
-                          validator.validateNonce(presented).flatMap { result =>
-                            (presented, result) match {
-                              case (
-                                    Some(value),
-                                    NonceValidationResult.Valid
-                                  ) =>
-                                verifyDpopProof(
-                                  req,
-                                  accessToken,
-                                  cnfKeyThumbprint,
-                                  proof,
-                                  validatedNonce = new Nonce(value)
-                                )
-                              case (None, NonceValidationResult.Valid) =>
-                                // defensive: no implementation may accept an
-                                // absent nonce as Valid
-                                challenge(
-                                  validator,
-                                  "validator accepted an absent nonce; re-challenging"
-                                )
-                              case (_, NonceValidationResult.Missing) =>
-                                challenge(
-                                  validator,
-                                  "proof carries no nonce; issued challenge"
-                                )
-                              case (_, NonceValidationResult.Invalid) =>
-                                challenge(
-                                  validator,
-                                  "nonce unknown, expired or already used; issued challenge"
-                                )
-                            }
+                          // A nonce store we cannot reach proves nothing: fail
+                          // closed with 503, as for every other auth dependency.
+                          validator.validateNonce(presented).attempt.flatMap {
+                            case Left(e) =>
+                              fail(
+                                AuthError.ValidationUnavailable,
+                                s"DPoP nonce store unavailable: ${e.getMessage}"
+                              )
+                            case Right(result) =>
+                              (presented, result) match {
+                                case (
+                                      Some(value),
+                                      NonceValidationResult.Valid
+                                    ) =>
+                                  verifyDpopProof(
+                                    req,
+                                    accessToken,
+                                    cnfKeyThumbprint,
+                                    proof,
+                                    validatedNonce = new Nonce(value)
+                                  )
+                                case (None, NonceValidationResult.Valid) =>
+                                  // defensive: no implementation may accept an
+                                  // absent nonce as Valid
+                                  challenge(
+                                    validator,
+                                    "validator accepted an absent nonce; re-challenging"
+                                  )
+                                case (_, NonceValidationResult.Missing) =>
+                                  challenge(
+                                    validator,
+                                    "proof carries no nonce; issued challenge"
+                                  )
+                                case (_, NonceValidationResult.Invalid) =>
+                                  challenge(
+                                    validator,
+                                    "nonce unknown, expired or already used; issued challenge"
+                                  )
+                              }
                           }
                       }
                   }
@@ -322,8 +326,8 @@ object DpopVerifier {
           /**
             * Cryptographic + claims verification of the proof, delegated to Nimbus: signature
             * (against the proof's own JWK header), key binding (thumbprint vs `cnfKeyThumbprint`),
-            * request binding (`htm`/`htu`), freshness (`iat`), access token hash (`ath`) and jti
-            * single-use.
+            * request binding (`htm`/`htu`), freshness (`iat`) and access token hash (`ath`). Only a
+            * proof that passes all of that spends its jti in [[DpopJtiStore]].
             *
             * @param cnfKeyThumbprint
             *   the JWK thumbprint from the access token's `cnf.jkt` claim; the proof's key must
@@ -339,10 +343,10 @@ object DpopVerifier {
               proof: SignedJWT,
               validatedNonce: Nonce
           ): F[Either[AuthError, Unit]] =
-            // `blocking`: signature verification is CPU work and the single-use
-            // check touches a shared map.
+            // `delay`, not `blocking`: with the jti check moved out, this is
+            // pure CPU work (the proof carries its own key — no fetch).
             Sync[F]
-              .blocking {
+              .delay {
                 nimbus.verify(
                   req.method.name,
                   requestUri(req, config.assumeTls),
@@ -357,7 +361,7 @@ object DpopVerifier {
               }
               .attempt
               .flatMap {
-                case Right(_)                => ().asRight[AuthError].pure[F]
+                case Right(_)                => spendJti(cnfKeyThumbprint, proof)
                 case Left(e: ParseException) =>
                   fail(
                     AuthError.InvalidDpopProof.Malformed,
@@ -384,6 +388,41 @@ object DpopVerifier {
               }
 
           /**
+            * RFC 9449 §11.1 single use. Keyed by the proof key's thumbprint as well as the jti, so
+            * one client cannot spend another's jti. A store failure fails closed as `503`: a proof
+            * we cannot prove unused is not accepted.
+            */
+          private def spendJti(
+              cnfKeyThumbprint: JwkThumbprint,
+              proof: SignedJWT
+          ): F[Either[AuthError, Unit]] =
+            jtiOf(proof) match {
+              case None =>
+                fail(AuthError.InvalidDpopProof.Malformed, "proof carries no jti")
+              case Some(jti) =>
+                store
+                  .markUsed(jtiKey(cnfKeyThumbprint.value: String, jti), retention)
+                  .attempt
+                  .flatMap {
+                    case Right(true)  => ().asRight[AuthError].pure[F]
+                    case Right(false) =>
+                      fail(
+                        AuthError.InvalidDpopProof.Rejected,
+                        "DPoP proof jti already used: replay detected"
+                      )
+                    case Left(e) =>
+                      fail(
+                        AuthError.ValidationUnavailable,
+                        s"DPoP jti store unavailable: ${e.getMessage}"
+                      )
+                  }
+            }
+
+          private def jtiOf(proof: SignedJWT): Option[String] =
+            try Option(proof.getJWTClaimsSet.getJWTID).filter(_.nonEmpty)
+            catch { case _: ParseException => None }
+
+          /**
             * Read the proof's `nonce` claim without trusting it — it is only a lookup key into
             * [[DpopNonceValidator]], which authenticates it.
             */
@@ -402,9 +441,15 @@ object DpopVerifier {
               validator: DpopNonceValidator[F],
               detail: String
           ): F[Either[AuthError, Unit]] =
-            validator.createNonce.flatMap { nonce =>
-              val err = AuthError.UseDpopNonce(nonce)
-              events.challengeIssued(err, detail).as(err.asLeft)
+            validator.createNonce.attempt.flatMap {
+              case Right(nonce) =>
+                val err = AuthError.UseDpopNonce(nonce)
+                events.challengeIssued(err, detail).as(err.asLeft)
+              case Left(e) =>
+                fail(
+                  AuthError.ValidationUnavailable,
+                  s"DPoP nonce store unavailable: ${e.getMessage}"
+                )
             }
 
           private def fail(

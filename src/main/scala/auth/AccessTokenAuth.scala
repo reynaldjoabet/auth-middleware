@@ -1,9 +1,9 @@
 package auth
 
+import cats.{Monad, MonadThrow}
 import cats.data.{EitherT, Kleisli, OptionT}
 import cats.effect.Clock
 import cats.syntax.all.*
-import cats.Monad
 
 import org.http4s.{
   AuthScheme,
@@ -76,7 +76,7 @@ object AccessTokenAuth {
     * @param clientCertificates
     *   enables mTLS certificate-bound token checks when set
     */
-  def middleware[F[_]: Monad](
+  def middleware[F[_]: MonadThrow](
       validator: AccessTokenValidator[F],
       events: AuthEvents[F],
       realm: String = "api",
@@ -232,9 +232,13 @@ object AccessTokenAuth {
               )
                 resp.pure[F]
               else
-                validator.createNonce.map(n =>
-                  resp.putHeaders(Header.Raw(DpopNonceHeader, n.value: String))
-                )
+                // The request itself already succeeded or failed on its own
+                // merits; failing to mint its rotation nonce must not change
+                // that. The client simply gets a challenge on its next call.
+                validator.createNonce.attempt.map {
+                  case Right(n) => resp.putHeaders(Header.Raw(DpopNonceHeader, n.value: String))
+                  case Left(_)  => resp
+                }
             }
           }
     }

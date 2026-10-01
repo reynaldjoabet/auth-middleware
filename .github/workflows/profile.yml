@@ -1,0 +1,103 @@
+name: Profile
+
+# Java Flight Recorder profiles of the service under load (bench/loadtest/profile.sh):
+# one recording per scenario, with the hot methods, allocation sites, GC and lock
+# contention of each in the job summary. The .jfr files are uploaded: open them in
+# JDK Mission Control for the full picture.
+#
+# Manual only. Run it from the Actions tab ("Run workflow").
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: 'Scenarios: bearer, bearer-cold, dpop (space separated)'
+        required: false
+        default: 'bearer bearer-cold dpop'
+      duration:
+        description: 'Recording length per scenario'
+        required: false
+        default: '30s'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: profile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  profile:
+    name: JFR profile (Redis)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: 'sbt'
+          cache-dependency-path: |
+            **/*.sbt
+            **/project/build.properties
+            **/project/*.scala
+
+      - name: Set up sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Install load-test tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq redis-server wrk
+          # The package starts a Redis on 6379; run.sh starts its own there.
+          sudo systemctl stop redis-server
+          printf '%s\n' /usr/lib/postgresql/*/bin | sort -V | tail -1 >> "$GITHUB_PATH"
+
+      - name: Split the cores between service and load generator
+        run: |
+          cores=$(nproc)
+          if (( cores >= 2 )); then
+            {
+              echo "SERVER_CPUS=0-$((cores - 2))"
+              echo "LOAD_CPUS=$((cores - 1))"
+              echo "THREADS=1"
+            } >> "$GITHUB_ENV"
+          fi
+
+      - name: Profile
+        env:
+          STORE: redis
+          SCENARIOS: ${{ inputs.scenarios || 'bearer bearer-cold dpop' }}
+          DURATION: ${{ inputs.duration || '30s' }}
+          PROOFS: '60000'
+        run: bench/loadtest/profile.sh
+
+      - name: Job summary
+        if: always()
+        run: |
+          for f in target/jfr/*.txt; do
+            [[ -f "$f" ]] || continue
+            case "$f" in *.wrk.txt) continue ;; esac
+            {
+              echo '<details><summary>'"$(basename "$f" .txt)"'</summary>'
+              echo
+              echo '```text'
+              cat "$f"
+              echo '```'
+              echo
+              echo '</details>'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload recordings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: jfr-${{ github.run_id }}
+          path: target/jfr/
+          retention-days: 30
+          if-no-files-found: ignore

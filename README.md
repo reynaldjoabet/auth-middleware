@@ -2331,6 +2331,32 @@ Measured on one node, they run at the same speed: 5.9k vs 6.1k DPoP requests/s, 
 | Introspection coalescing | automatic | Concurrent cache misses for one token make a single call to the authorization server. |
 | Log rate limiting and async log writer | `AuthEvents.slf4j(maxLinesPerSecond)` | Rejection and error lines are capped at 100/s each (the next line reports how many were dropped). Log writes never block a request. The `auth.decisions` metric still counts every decision. |
 
+### Profiling with JFR
+
+`bench/loadtest/profile.sh` records the packaged service under load with Java Flight Recorder, one recording per scenario, and prints each one's hot methods, allocation sites, GC and lock contention. In CI, the **Profile** workflow (Actions → Profile → Run workflow) runs it and puts the summaries in the job summary; the `.jfr` files are uploaded for JDK Mission Control.
+
+```bash
+bench/loadtest/profile.sh                                  # bearer, bearer-cold, dpop; 30 s each
+SCENARIOS=bearer DURATION=60s bench/loadtest/profile.sh
+```
+
+What a profile showed (Bearer with 20 000 distinct tokens, about 15k requests/s on a busy laptop):
+
+- **Where the CPU goes.** Ember's request parsing is about 10% and the cats-effect run loop is the largest single frame. The service's own `auth.` code is about 10% in total. The largest part of that, 3.9%, was scanning every character of the 850-character JWT in `CredentialExtraction`; it now uses lookup tables and runs about 1.7× faster (`bench.CredentialExtractionBench`).
+- **DPoP.** 63% of CPU is the JDK's own ECDSA P-256 signature check, in pure Java. Every proof is unique, so it can't be cached, and the service's code is under 4% of the path. DPoP throughput is bounded by P-256 verification speed, so it scales with cores.
+- **Cold Bearer** (verified-token cache off): the RSA check is about 15%; the rest is JSON parsing in Nimbus and the HTTP stack.
+- **Allocation.** About 1.1 GB/s, roughly 70 KB per request, nearly all of it Ember, fs2 and cats-effect; the service's own code is about 8%. G1 young collections ran every second, with pauses of 22 ms on average and 49 ms at most, the same size as the p99 latency.
+
+**Check which collector your containers get.** The JVM picks G1 only when it sees at least 2 CPUs and 1792 MB; below that it silently uses SerialGC. A pod limited to 1 CPU gets SerialGC and its stop-the-world pauses. Check with `-Xlog:gc` and size pods at 2 CPUs and 2 GB or more, or set the collector explicitly.
+
+To compare collectors or other JVM flags on one commit, run the **Benchmark** workflow with `base` set to `HEAD` and a different option for each side (`head_jvm_options: -XX:+UseZGC`), or locally:
+
+```bash
+BASE_SERVER_OPTS="" HEAD_SERVER_OPTS="-XX:+UseZGC" bench/loadtest/compare.sh HEAD
+```
+
+On a laptop in use, two comparable rounds put ZGC ahead of G1 (18.4k vs 15.7k and 12.6k vs 9.7k req/s, with lower p99), but a third round was swamped by other load, so that is not enough to change the default. Measure it on a quiet runner before changing it.
+
 ### Deploying
 
 Build the image with `sbt --client Docker/publishLocal` (or `Universal/packageBin` for a zip). The package:

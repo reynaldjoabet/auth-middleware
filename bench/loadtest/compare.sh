@@ -12,7 +12,13 @@
 #   ROUNDS=3 DURATION=20s bench/loadtest/compare.sh HEAD~1
 #
 # Everything run.sh reads passes through (DURATION, CONNS, STORE, ...); STORE
-# defaults to redis. Output in $OUT (default target/bench-compare):
+# defaults to redis.
+#
+# Comparing JVM options instead of code: name the same commit on both sides and
+# give each side its own options, e.g. the effect of the collector:
+#   BASE_SERVER_OPTS="" HEAD_SERVER_OPTS="-XX:+UseZGC" bench/loadtest/compare.sh HEAD
+#
+# Output in $OUT (default target/bench-compare):
 #   comparison.md    per-scenario table, base vs head
 #   benchmark.json   head's req/s, github-action-benchmark format
 #   results/         each run's wrk output; logs/ each run's full log
@@ -47,10 +53,12 @@ echo "head $(git -C "$HEAD_TREE" rev-parse --abbrev-ref HEAD) ($HEAD_SHA)"
 git -C "$HEAD_TREE" worktree add --detach "$BASE_TREE" "$BASE_SHA" >/dev/null
 
 run_side() { # side round
-  local side=$1 round=$2 tree
-  [[ "$side" == base ]] && tree=$BASE_TREE || tree=$HEAD_TREE
-  echo "[$(date +%H:%M:%S)] round $round: $side"
-  if ! ROOT="$tree" WORK="$OUT/work-$side-$round" bash "$HERE/run.sh" >"$OUT/logs/$side-$round.log" 2>&1; then
+  local side=$1 round=$2 tree opts
+  # Per-side JVM options, falling back to SERVER_OPTS for both.
+  if [[ "$side" == base ]]; then tree=$BASE_TREE opts=${BASE_SERVER_OPTS-${SERVER_OPTS:-}}
+  else tree=$HEAD_TREE opts=${HEAD_SERVER_OPTS-${SERVER_OPTS:-}}; fi
+  echo "[$(date +%H:%M:%S)] round $round: $side${opts:+ ($opts)}"
+  if ! ROOT="$tree" SERVER_OPTS="$opts" WORK="$OUT/work-$side-$round" bash "$HERE/run.sh" >"$OUT/logs/$side-$round.log" 2>&1; then
     echo "run.sh failed for $side (round $round); last lines:" >&2
     tail -30 "$OUT/logs/$side-$round.log" >&2
     exit 1
@@ -64,8 +72,11 @@ for round in $(seq 1 "$ROUNDS"); do
   for side in $order; do run_side "$side" "$round"; done
 done
 
+BASE_OPTS=${BASE_SERVER_OPTS-${SERVER_OPTS:-}}
+HEAD_OPTS=${HEAD_SERVER_OPTS-${SERVER_OPTS:-}}
 python3 "$HERE/summarize.py" \
   --base "$OUT"/results/base-*.txt --head "$OUT"/results/head-*.txt \
-  --base-label "${BASE_REF} (${BASE_SHA:0:7})" --head-label "${HEAD_SHA:0:7}" \
+  --base-label "${BASE_REF} (${BASE_SHA:0:7})${BASE_OPTS:+ $BASE_OPTS}" \
+  --head-label "${HEAD_SHA:0:7}${HEAD_OPTS:+ $HEAD_OPTS}" \
   --threshold "$THRESHOLD" --markdown "$OUT/comparison.md" --json "$OUT/benchmark.json"
 cat "$OUT/comparison.md"

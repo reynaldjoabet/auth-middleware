@@ -18,6 +18,14 @@ on:
         description: 'Ref to compare against (empty: main, or HEAD~1 when run on main)'
         required: false
         default: ''
+      base_jvm_options:
+        description: 'JVM options for the base side (to compare flags, set base to HEAD and give each side its own)'
+        required: false
+        default: ''
+      head_jvm_options:
+        description: 'JVM options for this commit, e.g. -XX:+UseZGC'
+        required: false
+        default: ''
       rounds:
         description: 'Rounds per side (median taken)'
         required: false
@@ -106,6 +114,8 @@ jobs:
       - name: A/B benchmark
         env:
           STORE: redis
+          BASE_SERVER_OPTS: ${{ inputs.base_jvm_options }}
+          HEAD_SERVER_OPTS: ${{ inputs.head_jvm_options }}
           ROUNDS: ${{ inputs.rounds || '3' }}
           DURATION: ${{ inputs.duration || '20s' }}
           DPOP_DURATION: 10s

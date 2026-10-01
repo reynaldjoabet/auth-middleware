@@ -81,7 +81,7 @@ def change(base, head):
 
 def markdown(base, head, threshold, base_label, head_label):
     lines = [
-        f"### Load test: `{head_label}` vs `{base_label}`",
+        f"### Benchmark: `{head_label}` vs `{base_label}`",
         "",
         "| Scenario | Base req/s | Head req/s | Change | Base p99 ms | Head p99 ms | Errors (base / head) |",
         "|---|---:|---:|---:|---:|---:|---:|",

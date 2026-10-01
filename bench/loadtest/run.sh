@@ -22,6 +22,8 @@
 #   STORE=postgres STORE_PG_MAX_BATCH=1 ...     # ...one statement per call
 #   ROOT=/path/to/other/checkout bench/loadtest/run.sh  # test another tree
 #                                                 with this harness
+#   SERVER_CPUS=0-2 LOAD_CPUS=3 THREADS=1 ...   # Linux: service and wrk on
+#                                                 separate cores
 #
 # CONNS stays below 50 on purpose. fs2 binds the listening socket with the
 # JDK's default backlog of 50, so opening more connections than that at once
@@ -51,6 +53,16 @@ SERVICE=${SERVICE:-http4s}
 OTEL_SDK_DISABLED=${OTEL_SDK_DISABLED:-false}
 NONCE_HARVEST=${NONCE_HARVEST:-10s}
 STORE=${STORE:-redis}
+# Linux only: CPU lists for taskset, e.g. SERVER_CPUS=0-2 LOAD_CPUS=3. The
+# service and its dependencies (Postgres, Redis, JWKS) run on SERVER_CPUS and
+# wrk on LOAD_CPUS, so the load generator does not take CPU from what it
+# measures. Unset (the default) runs everything unpinned.
+SERVER_CPUS=${SERVER_CPUS:-}
+LOAD_CPUS=${LOAD_CPUS:-}
+SERVER_PIN=()
+LOAD_PIN=()
+[[ -n "$SERVER_CPUS" ]] && SERVER_PIN=(taskset -c "$SERVER_CPUS")
+[[ -n "$LOAD_CPUS" ]] && LOAD_PIN=(taskset -c "$LOAD_CPUS")
 
 HTTP_PORT=18080
 JWKS_PORT=8443
@@ -93,7 +105,7 @@ mint() { # tokens proofs [nonce-file]
 start_server() { # extra JAVA_OPTS
   SERVER_RUN=$((SERVER_RUN + 1))
   SERVER_LOG="$WORK/server-$SERVER_RUN.log"
-  env HTTP_HOST=127.0.0.1 HTTP_PORT=$HTTP_PORT \
+  ${SERVER_PIN[@]+"${SERVER_PIN[@]}"} env HTTP_HOST=127.0.0.1 HTTP_PORT=$HTTP_PORT \
     DB_HOST=127.0.0.1 DB_PORT=$PG_PORT DB_NAME=auth DB_USER=auth DB_PASSWORD=unused \
     AUTH_ISSUER=$ISSUER AUTH_AUDIENCE=$AUDIENCE AUTH_JWKS_URI="https://localhost:$JWKS_PORT/jwks.json" \
     STORE_BACKEND=$STORE \
@@ -122,7 +134,7 @@ run() { # name, wrk args...
   local name=$1
   shift
   log "$name" | tee -a "$RESULTS"
-  wrk -t"$THREADS" -c"$CONNS" --latency "$@" | tee -a "$RESULTS"
+  ${LOAD_PIN[@]+"${LOAD_PIN[@]}"} wrk -t"$THREADS" -c"$CONNS" --latency "$@" | tee -a "$RESULTS"
 }
 
 log "work dir: $WORK"
@@ -161,7 +173,7 @@ mint "$TOKENS" 0
 cp "$MATERIAL/jwks.json" "$WORK/jwks/jwks.json"
 
 log "Starting the JWKS endpoint on :$JWKS_PORT"
-python3 - "$WORK/jwks" "$WORK/tls" "$JWKS_PORT" <<'PY' &
+${SERVER_PIN[@]+"${SERVER_PIN[@]}"} python3 - "$WORK/jwks" "$WORK/tls" "$JWKS_PORT" <<'PY' &
 import functools, http.server, ssl, sys
 directory, tls, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
 class Quiet(http.server.SimpleHTTPRequestHandler):
@@ -177,10 +189,10 @@ JWKS_PID=$!
 
 log "Starting Postgres on :$PG_PORT and Redis on :$REDIS_PORT"
 initdb -D "$WORK/pg" -U auth -A trust -E UTF8 --no-sync >/dev/null
-pg_ctl -D "$WORK/pg" -l "$WORK/pg.log" -w \
+${SERVER_PIN[@]+"${SERVER_PIN[@]}"} pg_ctl -D "$WORK/pg" -l "$WORK/pg.log" -w \
   -o "-p $PG_PORT -c listen_addresses=127.0.0.1 -c unix_socket_directories=''" start >/dev/null
 createdb -h 127.0.0.1 -p "$PG_PORT" -U auth auth
-redis-server --port "$REDIS_PORT" --bind 127.0.0.1 --save "" --appendonly no \
+${SERVER_PIN[@]+"${SERVER_PIN[@]}"} redis-server --port "$REDIS_PORT" --bind 127.0.0.1 --save "" --appendonly no \
   --daemonize yes --logfile "$WORK/redis.log"
 
 log "Starting the service (verified-token cache on)"
@@ -194,7 +206,7 @@ if [[ "$MODE" == "serve" ]]; then
 fi
 
 log "Warm-up (JIT, caches): 15s, not recorded"
-wrk -t"$THREADS" -c"$CONNS" -d15s -s "$SCRIPTS/bearer.lua" "$BASE/me" -- "$MATERIAL/tokens.txt" >/dev/null
+${LOAD_PIN[@]+"${LOAD_PIN[@]}"} wrk -t"$THREADS" -c"$CONNS" -d15s -s "$SCRIPTS/bearer.lua" "$BASE/me" -- "$MATERIAL/tokens.txt" >/dev/null
 
 run "1. GET /health — HTTP stack only, no auth (ceiling)" -d"$DURATION" "$BASE/health"
 run "2. Bearer, one token reused (verified-token cache hit)" -d"$DURATION" \
@@ -205,7 +217,7 @@ run "3. Bearer, $TOKENS distinct tokens (cache + revocation cache + $STORE)" -d"
 log "Restarting with the revocation cache off: one $STORE read per request"
 stop_server
 start_server "-Dapp.auth.cache.revocation-ttl=0"
-wrk -t"$THREADS" -c"$CONNS" -d10s -s "$SCRIPTS/bearer.lua" "$BASE/me" -- "$MATERIAL/tokens.txt" >/dev/null
+${LOAD_PIN[@]+"${LOAD_PIN[@]}"} wrk -t"$THREADS" -c"$CONNS" -d10s -s "$SCRIPTS/bearer.lua" "$BASE/me" -- "$MATERIAL/tokens.txt" >/dev/null
 run "3b. Bearer, $TOKENS distinct tokens, revocation cache OFF ($STORE read every request)" \
   -d"$DURATION" -s "$SCRIPTS/bearer.lua" "$BASE/me" -- "$MATERIAL/tokens.txt"
 stop_server
@@ -240,7 +252,7 @@ log "Restarting with $STORE single-use nonces (consumed on use, minted per respo
 restart_with_nonces true redis
 mint 0 1
 rm -f "$WORK"/nonces.txt*
-wrk -t"$THREADS" -c"$CONNS" -d"$NONCE_HARVEST" -s "$SCRIPTS/nonces.lua" "$BASE/me" -- \
+${LOAD_PIN[@]+"${LOAD_PIN[@]}"} wrk -t"$THREADS" -c"$CONNS" -d"$NONCE_HARVEST" -s "$SCRIPTS/nonces.lua" "$BASE/me" -- \
   "$MATERIAL/dpop.txt" "$WORK/nonces.txt" >/dev/null
 cat "$WORK"/nonces.txt.* >"$WORK/nonces.txt"
 HARVESTED=$(wc -l <"$WORK/nonces.txt" | tr -d ' ')
@@ -254,7 +266,7 @@ fi
 log "Restarting the service with the verified-token cache off"
 stop_server
 start_server "-Dapp.auth.cache.verified-tokens=0"
-wrk -t"$THREADS" -c"$CONNS" -d10s -s "$SCRIPTS/bearer.lua" "$BASE/me" -- "$MATERIAL/tokens.txt" >/dev/null
+${LOAD_PIN[@]+"${LOAD_PIN[@]}"} wrk -t"$THREADS" -c"$CONNS" -d10s -s "$SCRIPTS/bearer.lua" "$BASE/me" -- "$MATERIAL/tokens.txt" >/dev/null
 run "5. Bearer, $TOKENS distinct tokens, cache OFF (RS256 verify every request)" -d"$DURATION" \
   -s "$SCRIPTS/bearer.lua" "$BASE/me" -- "$MATERIAL/tokens.txt"
 

@@ -1,6 +1,6 @@
 import Dependencies._
 
-scalaVersion := "3.9.0"
+scalaVersion := "3.10.0"
 version      := "0.1.0-SNAPSHOT"
 
 ThisBuild / scalacOptions := Seq(

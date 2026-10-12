@@ -28,7 +28,7 @@ object Dependencies {
     // --- FP ---
     val catsEffect      = "3.7.1"
     val fs2             = "3.14.0"
-    val fs2Kafka        = "4.1.2"
+    val fs2Kafka        = "4.1.3"
     val chimney         = "2.1.0"
     val iron            = "3.3.2"
     val hedgehog        = "0.13.0"
@@ -42,7 +42,7 @@ object Dependencies {
     val skunk    = "2.0.0-RC3"
     val hikaricp = "7.1.0"
     val flyway   = "13.8.0"
-    val postgres = "42.7.13"
+    val postgres = "42.7.14"
 
     // --- Security ---
     val jwtScala         = "11.0.4"
@@ -71,7 +71,7 @@ object Dependencies {
 
     // --- Cloud ---
     val awsV2         = "2.26.15"
-    val azureIdentity = "1.18.6"
+    val azureIdentity = "1.18.7"
     val azureKv       = "4.9.4"
 
   }

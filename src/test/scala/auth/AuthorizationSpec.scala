@@ -64,11 +64,18 @@ class AuthorizationSpec extends CatsEffectSuite {
 
   }
 
-  private def evaluator(pdp: FakePdp, cacheTtl: FiniteDuration = Duration.Zero) =
+  // A generous request timeout by default: the first call in a cold JVM loads the HTTP client, circe
+  // and Caffeine, and a busy machine (other suites, Kafka, Postgres) can stretch that well past a
+  // few hundred milliseconds. Only the test that wants a timeout asks for a short one.
+  private def evaluator(
+      pdp: FakePdp,
+      cacheTtl: FiniteDuration = Duration.Zero,
+      requestTimeout: FiniteDuration = 10.seconds
+  ) =
     AccessEvaluator.authZen[IO](
       AccessEvaluator.PdpConfig(
         endpoint = uri"https://iam.test.example",
-        requestTimeout = 200.millis,
+        requestTimeout = requestTimeout,
         cacheTtl = cacheTtl
       ),
       Client.fromHttpApp(pdp.app)
@@ -218,10 +225,13 @@ class AuthorizationSpec extends CatsEffectSuite {
   test("a PDP error or a slow PDP is 503, never an answer") {
     val (broken, slow) = (new FakePdp, new FakePdp)
     broken.failWith = Some(Status.InternalServerError)
-    slow.delay = 1.second
+    // Far longer than the timeout, which cancels the wait: the test takes about as long as the
+    // timeout, and the PDP is too slow however busy the machine is.
+    slow.delay = 1.minute
     for {
       b <- evaluator(broken).flatMap(e => get(app(e), employee123, token()))
-      s <- evaluator(slow).flatMap(e => get(app(e), employee123, token()))
+      s <- evaluator(slow, requestTimeout = 200.millis)
+             .flatMap(e => get(app(e), employee123, token()))
     } yield {
       assertEquals(b.status, Status.ServiceUnavailable)
       assertEquals(s.status, Status.ServiceUnavailable)

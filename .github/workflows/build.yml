@@ -5,10 +5,6 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # Nightly run catches breakage from outside the repo - upstream releases,
-  # runner image changes - on days with no commits. Drop if not wanted.
-  schedule:
-    - cron: '0 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -23,8 +19,8 @@ env:
   SBT_OPTS: -Xmx4g -XX:ReservedCodeCacheSize=512m
 
 jobs:
-  # Formatting is independent of Scala and JDK version, so it runs once here
-  # rather than being repeated in every matrix leg.
+  # Formatting is independent of the JDK, so it runs once here rather than
+  # being repeated in every matrix leg.
   lint:
     name: Formatting
     runs-on: ubuntu-latest
@@ -52,7 +48,7 @@ jobs:
         run: sbt -v "scalafmtSbtCheck; scalafmtCheckAll; core/scalafmtCheckAll; zio/scalafmtCheckAll; bench/scalafmtCheckAll"
 
   build:
-    name: Scala ${{ matrix.scala }} / Java ${{ matrix.java }} (${{ matrix.distribution }})
+    name: Java ${{ matrix.java }} (${{ matrix.distribution }})
     # Gate on formatting so a misformatted PR fails in one cheap job rather
     # than burning every matrix leg.
     needs: lint
@@ -95,9 +91,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # sage-client 0.4.0 requires scala3-library 3.9.0, which sets the floor
-        # for this build. A 3.3.x LTS leg would need sage 0.3.1 and Play 3.0.x.
-        scala: ['3.9.0']
         # -java-output-version:21 makes 21 the minimum supported runtime; 25 is
         # verified so the service can run on either.
         java: ['21', '25']
@@ -125,4 +118,4 @@ jobs:
         uses: sbt/setup-sbt@v1
 
       - name: Compile and test
-        run: sbt -v "++${{ matrix.scala }}" "Test/compile; core/testFull; testFull; zio/testFull; bench/Jmh/compile; Docker/stage"
+        run: sbt -v "Test/compile; core/testFull; testFull; zio/testFull; bench/Jmh/compile; Docker/stage"

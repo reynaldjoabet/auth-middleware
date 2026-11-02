@@ -12,11 +12,11 @@ object Dependencies {
     val zioConfig  = "4.1.0"
     val zioSchema  = "1.9.0"
     val zioBlocks  = "0.017"
-    val zioKafka   = "3.8.0"
+    val zioKafka   = "3.8.1"
 
     // --- HTTP ---
     val http4s      = "0.23.38"
-    val http4sNetty = "0.7.2"
+    val http4sNetty = "0.7.4"
     val netty       = "4.2.17.Final"
     val sttp4       = "4.0.25"
     val tapir       = "1.13.18"
@@ -56,7 +56,7 @@ object Dependencies {
     // --- Logging ---
     val scribe  = "3.19.0"
     val slf4j   = "2.0.20"
-    val logback = "1.6.5"
+    val logback = "1.6.6"
 
     // --- Cache ---
     val caffeine = "3.3.1"
@@ -283,10 +283,10 @@ object Dependencies {
   // 0.4.0 is built with Scala 3.9.0 and requires scala3-library_3 3.9.0, so it
   // pins the build to 3.9.0+. Re-adding a 3.3.x LTS leg means reverting to 0.3.1.
   lazy val sageClientCe =
-    "com.github.ghostdogpr" %% "sage-client-ce" % "0.4.0"
+    "com.github.ghostdogpr" %% "sage-client-ce" % "0.5.0"
 
   lazy val sageClientZio =
-    "com.github.ghostdogpr" %% "sage-client-zio" % "0.4.0"
+    "com.github.ghostdogpr" %% "sage-client-zio" % "0.5.0"
 
   // Logging
   lazy val scribe = "com.outr" %% "scribe" % Version.scribe

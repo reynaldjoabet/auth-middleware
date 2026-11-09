@@ -28,7 +28,7 @@ object Dependencies {
     // --- FP ---
     val catsEffect      = "3.7.1"
     val fs2             = "3.14.0"
-    val fs2Kafka        = "4.1.3"
+    val fs2Kafka        = "4.2.0"
     val chimney         = "2.1.0"
     val iron            = "3.3.2"
     val hedgehog        = "0.13.0"
@@ -50,7 +50,7 @@ object Dependencies {
     val password4j       = "1.8.4"
     val auth0            = "4.6.2"
     val nimbusJoseJwt    = "10.10"
-    val nimbusOauth2Oidc = "11.38.2"
+    val nimbusOauth2Oidc = "11.39"
     val vault            = "5.1.0"
 
     // --- Logging ---
@@ -71,7 +71,7 @@ object Dependencies {
 
     // --- Cloud ---
     val awsV2         = "2.26.15"
-    val azureIdentity = "1.18.7"
+    val azureIdentity = "1.19.0"
     val azureKv       = "4.9.4"
 
   }
@@ -283,10 +283,10 @@ object Dependencies {
   // 0.4.0 is built with Scala 3.9.0 and requires scala3-library_3 3.9.0, so it
   // pins the build to 3.9.0+. Re-adding a 3.3.x LTS leg means reverting to 0.3.1.
   lazy val sageClientCe =
-    "com.github.ghostdogpr" %% "sage-client-ce" % "0.5.0"
+    "com.github.ghostdogpr" %% "sage-client-ce" % "0.6.0"
 
   lazy val sageClientZio =
-    "com.github.ghostdogpr" %% "sage-client-zio" % "0.5.0"
+    "com.github.ghostdogpr" %% "sage-client-zio" % "0.6.0"
 
   // Logging
   lazy val scribe = "com.outr" %% "scribe" % Version.scribe

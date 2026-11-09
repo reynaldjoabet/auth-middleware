@@ -1,7 +1,6 @@
 package app.infra.kafka
 
 import cats.effect.{Async, Resource}
-import cats.effect.implicits.parallelForGenSpawn
 import cats.syntax.all.*
 import fs2.kafka.{Acks, KafkaProducer, ProducerSettings, Serializer}
 

@@ -95,7 +95,7 @@ jobs:
         # verified so the service can run on either.
         java: ['21', '25']
 
-        distribution: [temurin, corretto]
+        distribution: [temurin, corretto,zulu]
 
     steps:
       - name: Checkout repository

@@ -32,9 +32,11 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
   * @param allowedAlgorithms
   *   permitted JWS algorithms; keep this to the algorithms your authorization server actually uses
   * @param acceptedTokenTypes
-  *   permitted JOSE `typ` header values. RFC 9068 access tokens use `at+jwt`; plain `JWT` (or an
-  *   absent `typ`) is accepted by default for compatibility. Restrict to `at+jwt` only if your
-  *   issuer supports it, to rule out ID-token replay at the API.
+  *   permitted JOSE `typ` header values, compared ignoring case and the `application/` prefix (so
+  *   `at+jwt` also accepts `application/at+jwt`, as RFC 9068 §4 requires). RFC 9068 access tokens
+  *   use `at+jwt`; plain `JWT` is accepted by default for compatibility. A token without `typ` is
+  *   always rejected. Restrict to `at+jwt` only if your issuer supports it, to rule out ID-token
+  *   replay at the API.
   * @param clockSkew
   *   tolerated clock difference when checking `exp` / `nbf` / `iat`
   * @param requiredClaims

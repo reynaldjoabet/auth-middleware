@@ -34,6 +34,13 @@ import io.github.iltotore.iron.*
   *   the RFC 7800 `cnf` sender-constraint binding, if present: either a DPoP key thumbprint (`jkt`,
   *   RFC 9449) or a client-certificate thumbprint (`x5t#S256`, RFC 8705). The two are mutually
   *   exclusive.
+  * @param actor
+  *   the current actor when the token was obtained by token exchange and names who is acting on the
+  *   subject's behalf (the RFC 8693 `act` claim). Only this actor may inform access control; its
+  *   `prior` chain is for audit only (RFC 8693 §4.1).
+  * @param authorizationDetails
+  *   the RFC 9396 `authorization_details` entries: what the client may do, more precisely than
+  *   scopes. Enforced per route by `AccessTokenAuth.requireAuthorizationDetail`.
   * @param claims
   *   the full validated claims set, for access to custom claims
   */
@@ -48,7 +55,9 @@ final case class AuthContext(
     confirmation: Option[
       ConfirmationClaim
     ], // the two loose dpopKeyThumbprint/certificateThumbprint: Option[String] fields collapsed into one confirmation: Option[ConfirmationClaim]. The enum makes it impossible to represent both or neither binding — a class of bug the two-Option shape allowed.
-    claims: JWTClaimsSet
+    claims: JWTClaimsSet,
+    actor: Option[Actor] = None,
+    authorizationDetails: List[AuthorizationDetail] = Nil
 ) {
 
   def hasScope(scope: ScopeToken): Boolean = scopes.contains(scope)
@@ -84,11 +93,17 @@ final case class AuthContext(
   def isSenderConstrained: Boolean = confirmation.isDefined
 
   /**
+    * True when another party is acting on the subject's behalf (RFC 8693 delegation).
+    */
+  def isDelegated: Boolean = actor.isDefined
+
+  /**
     * Redacted rendering, safe for logs and audit events.
     */
   override def toString: String =
     s"AuthContext(subject=$subject, clientId=$clientId, scopes=$scopes, tokenId=$tokenId, " +
-      s"expiresAt=$expiresAt, acr=$acr, senderConstrained=$isSenderConstrained)"
+      s"expiresAt=$expiresAt, acr=$acr, senderConstrained=$isSenderConstrained" +
+      actor.fold("")(a => s", actor=${a.chain.map(_.id).mkString(" <- ")}") + ")"
 
 }
 

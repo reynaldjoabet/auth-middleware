@@ -22,7 +22,7 @@ object AppConfigLoader {
       // value must fail the boot, not the first request that exercises it.
       F.delay {
         val _ = cfg.auth.toAccessTokenConfig
-        val _ = cfg.auth.introspection.toIntrospectionConfig
+        val _ = cfg.auth.introspectionConfig
         val _ = cfg.auth.dpop.nonce.decodedKey
         val _ = cfg.auth.dpop.nonce.decodedPreviousKeys
       }.void

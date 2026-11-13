@@ -2357,6 +2357,24 @@ BASE_SERVER_OPTS="" HEAD_SERVER_OPTS="-XX:+UseZGC" bench/loadtest/compare.sh HEA
 
 On a laptop in use, two comparable rounds put ZGC ahead of G1 (18.4k vs 15.7k and 12.6k vs 9.7k req/s, with lower p99), but a third round was swamped by other load, so that is not enough to change the default. Measure it on a quiet runner before changing it.
 
+### Standards for a resource server
+
+What each RFC asks of a resource server, and where this service does it.
+
+| RFC | Requirement | Where |
+|---|---|---|
+| 6750 | Bearer tokens in the `Authorization` header only; `invalid_token` / `insufficient_scope` challenges | `AccessTokenAuth`, `AuthChallenge` |
+| 7800, 8705, 9449 | Sender-constrained tokens: `cnf.x5t#S256` (mTLS) and `cnf.jkt` with DPoP proofs | `Mtls`, `DpopVerifier` |
+| 9068 §4, 8725 §3.11, 9701 §8.1 | Check the access token's `typ`. `at+jwt` and `application/at+jwt` are accepted (compared ignoring case and the `application/` prefix); a token without `typ`, or a signed introspection response passed off as a token, is rejected | `TokenVerification.typeVerifier` |
+| 9470 | Step-up: `acr` and `auth_time` per route | `requireAcr`, `requireFreshAuth` |
+| 8693 §4.1 | Token exchange: the `act` claim names who acts for the subject. Only the current actor may inform access control; prior actors are for audit. A malformed `act` fails the token | `AuthContext.actor`; sent to the PDP as `subject.properties.act` |
+| 9396, 9700 §2.3 | `authorization_details`: a route can require a grant for this action at this location. One entry must meet the whole requirement; separate entries are separate grants | `requireAuthorizationDetail(AuthorizationDetailRequirement(...))` |
+| 7662, 7523, 10070 | Introspection, optionally authenticated with `private_key_jwt` (`client-auth = private-key-jwt`): a fresh assertion per request, typed `client-authentication+jwt`, its `aud` the issuer identifier alone | `TokenIntrospection`, `PrivateKeyJwt` |
+| 9701 | Signed introspection responses (`jwt-response = true`): believed only when the signature, `typ`, `iss`, `aud` and a recent `iat` check out; a plain-JSON answer fails closed | `JwtIntrospectionResponse` |
+| 4632 | The forwarded client-certificate header is read only from the proxy networks in `AUTH_MTLS_TRUSTED_PROXIES` | `ClientCertificates.fromForwardedHeader` |
+
+The others in the same family apply to authorization servers or clients, not to a resource server. They include RFC 6749, 7009, 7591/7592, 7636, 8252, 9126, 9207 and 10017.
+
 ### Deploying
 
 Build the image with `sbt --client Docker/publishLocal` (or `Universal/packageBin` for a zip). The package:
@@ -2399,7 +2417,7 @@ Measured on one machine with two nodes behind HAProxy, 100 client connections, a
 
 Run HAProxy on its own machines. On an app node's cores it competes with the service: on one laptop, putting HAProxy in front roughly halved throughput (101k → 52–64k/s against a bare Ember server).
 
-**mTLS behind the proxy.** For RFC 8705 certificate-bound tokens, use the commented `bind` line (it requests client certificates and accepts self-signed ones), and set `AUTH_MTLS_FORWARDED_CERT_HEADER=X-Forwarded-Client-Cert` on the nodes. HAProxy first deletes any client-supplied copy of that header, then forwards the certificate from the TLS handshake as URL-encoded PEM. Enable the setting only behind a proxy that strips the header. If clients can reach a node directly, anyone holding a stolen token could supply its (public) certificate themselves. Unset (the default), certificate-bound tokens are rejected.
+**mTLS behind the proxy.** For RFC 8705 certificate-bound tokens, use the commented `bind` line (it requests client certificates and accepts self-signed ones), and set `AUTH_MTLS_FORWARDED_CERT_HEADER=X-Forwarded-Client-Cert` on the nodes, together with `AUTH_MTLS_TRUSTED_PROXIES`: the addresses or CIDR blocks (RFC 4632) the proxies connect from, comma separated, e.g. `10.0.0.0/8, fd00::/8`. The service refuses to start with the header set and no proxies listed. HAProxy first deletes any client-supplied copy of that header, then forwards the certificate from the TLS handshake as URL-encoded PEM. The node reads the header only when the TCP peer is one of those proxies. From any other peer it is ignored, so a request that reaches a node directly cannot supply a stolen token's (public) certificate itself. Unset (the default), certificate-bound tokens are rejected.
 
 ### Metrics to watch
 

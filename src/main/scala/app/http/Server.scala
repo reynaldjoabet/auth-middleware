@@ -65,7 +65,7 @@ object Server {
            )
 
       // RFC 7662 revocation via the AS (fail closed); owns its pooled client.
-      introspection <- cfg.auth.introspection.toIntrospectionConfig match {
+      introspection <- cfg.auth.introspectionConfig match {
                          case None         => Resource.pure[F, Option[TokenIntrospection[F]]](None)
                          case Some(config) =>
                            EmberClientBuilder
@@ -143,7 +143,9 @@ object Server {
             events,
             dpopVerifier = dpopVerifier,
             clientCertificates = cfg.auth.mtlsForwardedCertHeader
-              .map(header => ClientCertificates.fromForwardedHeader[F](CIString(header)))
+              .map(header =>
+                ClientCertificates.fromForwardedHeader[F](cfg.auth.trustedProxies, CIString(header))
+              )
           )
       // Shedding is outermost so an overloaded node spends almost nothing on
       // a request it will refuse; the timeout bounds everything beneath it.

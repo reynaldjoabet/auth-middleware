@@ -5,7 +5,9 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
 import cats.effect.IO
+import cats.syntax.all.*
 
+import com.comcast.ip4s.*
 import auth.accesstoken.*
 import auth.revocation.TokenDenylist
 import io.github.iltotore.iron.*
@@ -16,6 +18,7 @@ import org.http4s.AuthedRoutes
 import org.http4s.Header
 import org.http4s.Method
 import org.http4s.Request
+import org.http4s.Response
 import org.http4s.Status
 import org.typelevel.ci.*
 
@@ -51,13 +54,30 @@ class MtlsSpec extends CatsEffectSuite {
         validator,
         AuthEvents.noop[IO],
         senderConstraint = policy,
-        clientCertificates = Some(ClientCertificates.fromForwardedHeader[IO]())
+        clientCertificates = Some(ClientCertificates.fromForwardedHeader[IO](trustedProxies))
       )
       .apply(routes)
       .orNotFound
 
-  private def request(token: String, certPem: Option[String]): Request[IO] = {
-    val base = Request[IO](Method.GET, uri"/accounts")
+  private val trustedProxies = Mtls.parseCidrs("10.0.0.0/8, fd00::/8").fold(fail(_), identity)
+
+  // The TCP peer the request arrived from: by default the proxy.
+  private def from(peer: String): Request.Connection =
+    Request.Connection(
+      local = SocketAddress(ipv4"10.9.9.9", port"8080"),
+      remote = SocketAddress(IpAddress.fromString(peer).getOrElse(fail(peer)), port"40000"),
+      secure = false
+    )
+
+  private def request(
+      token: String,
+      certPem: Option[String],
+      peer: Option[String] = Some("10.1.2.3")
+  ): Request[IO] = {
+    val base = peer
+      .fold(Request[IO](Method.GET, uri"/accounts"))(p =>
+        Request[IO](Method.GET, uri"/accounts").withAttribute(Request.Keys.ConnectionInfo, from(p))
+      )
       .putHeaders(Header.Raw(ci"Authorization", s"Bearer $token"))
     certPem.fold(base) { pem =>
       base.putHeaders(
@@ -123,10 +143,12 @@ class MtlsSpec extends CatsEffectSuite {
     val token = sign(mtlsBoundClaims(x5tS256))
     app()
       .run(
-        Request[IO](Method.GET, uri"/accounts").putHeaders(
-          Header.Raw(ci"Authorization", s"Bearer $token"),
-          Header.Raw(ci"X-Forwarded-Client-Cert", haproxyValue)
-        )
+        Request[IO](Method.GET, uri"/accounts")
+          .withAttribute(Request.Keys.ConnectionInfo, from("10.1.2.3"))
+          .putHeaders(
+            Header.Raw(ci"Authorization", s"Bearer $token"),
+            Header.Raw(ci"X-Forwarded-Client-Cert", haproxyValue)
+          )
       )
       .map(r => assertEquals(r.status, Status.Ok))
   }
@@ -177,6 +199,49 @@ class MtlsSpec extends CatsEffectSuite {
       assertEquals(resp.status, Status.Ok)
       resp.as[String].assertEquals("user-123")
     }
+  }
+
+  // --- RFC 4632: the header only from trusted proxies -------------------------
+
+  private def boundRequest(peer: Option[String]): Request[IO] =
+    request(sign(mtlsBoundClaims(x5tS256)), Some(clientCertPem), peer)
+
+  private def status(req: Request[IO]): IO[Status] =
+    app().run(req).map((r: Response[IO]) => r.status)
+
+  test("the forwarded certificate is honoured from a trusted proxy, IPv4 or IPv6") {
+    List(Some("10.1.2.3"), Some("fd00::1"), Some("::ffff:10.1.2.3"))
+      .traverse(peer => status(boundRequest(peer)).map(peer -> _))
+      .map(_.foreach((peer, s) => assertEquals(s, Status.Ok, s"peer $peer")))
+  }
+
+  test(
+    "from any other peer, or with no known peer, the header is ignored and binding fails closed"
+  ) {
+    List(
+      Some("203.0.113.7"),
+      Some("11.0.0.1"),
+      Some("2001:db8::1"),
+      Some("::ffff:203.0.113.7"),
+      None
+    )
+      .traverse(peer => status(boundRequest(peer)).map(peer -> _))
+      .map(_.foreach((peer, s) => assertEquals(s, Status.Unauthorized, s"peer $peer")))
+  }
+
+  test("trusted proxies: CIDR blocks and bare addresses parse; garbage is named") {
+    assertEquals(Mtls.parseCidrs("").map(_.size), Right(0))
+    assertEquals(Mtls.parseCidrs("10.0.0.0/8,192.168.1.10  fd00::/8").map(_.size), Right(3))
+    assert(Mtls.isTrusted(ipv4"192.168.1.10", Mtls.parseCidrs("192.168.1.10").toOption.get))
+    assert(!Mtls.isTrusted(ipv4"192.168.1.11", Mtls.parseCidrs("192.168.1.10").toOption.get))
+    assertEquals(
+      Mtls.parseCidrs("10.0.0.0/8, nope"),
+      Left("'nope' is not a CIDR block or IP address")
+    )
+  }
+
+  test("a forwarded-certificate source with no trusted proxies is refused") {
+    intercept[IllegalArgumentException](ClientCertificates.fromForwardedHeader[IO](Nil))
   }
 
 }

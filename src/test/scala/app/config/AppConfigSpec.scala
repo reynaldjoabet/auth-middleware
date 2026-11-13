@@ -52,6 +52,7 @@ class AppConfigSpec extends FunSuite {
               verified-token-ttl = 5 minutes
               revocation-ttl = 1 second
             }
+            mtls-trusted-proxies = ""
             $authBlock
           }
           redis {
@@ -96,7 +97,7 @@ class AppConfigSpec extends FunSuite {
     s"""dpop { enabled = true, nonce { enabled = true, mode = stateless, key = "$testKeyB64", previous-keys = [], lifetime = 5 minutes } }"""
 
   private val introspectionOff =
-    """introspection { enabled = false, cache-ttl = 10 seconds, request-timeout = 2 seconds }"""
+    """introspection { enabled = false, cache-ttl = 10 seconds, request-timeout = 2 seconds, client-auth = client-secret-basic, jwt-response = false }"""
 
   test("full config loads; nonce key decodes; disabled introspection is None") {
     val cfg = load(s"$dpopOn\n$introspectionOff")
@@ -104,7 +105,7 @@ class AppConfigSpec extends FunSuite {
     assert(cfg.auth.dpop.enabled)
     assert(cfg.auth.dpop.nonce.decodedKey.isDefined)
     assertEquals(cfg.auth.dpop.nonce.decodedPreviousKeys, Nil)
-    assertEquals(cfg.auth.introspection.toIntrospectionConfig, None)
+    assertEquals(cfg.auth.introspectionConfig, None)
     assertEquals(cfg.store.backend, StoreBackend.Postgres)
     assertEquals(cfg.revocation.kafka.properties.keySet, Set("security.protocol"))
   }
@@ -134,10 +135,10 @@ class AppConfigSpec extends FunSuite {
   ) {
     val cfg = load(
       s"""$dpopOn
-         introspection { enabled = true, cache-ttl = 10 seconds, request-timeout = 2 seconds }"""
+         introspection { enabled = true, cache-ttl = 10 seconds, request-timeout = 2 seconds, client-auth = client-secret-basic, jwt-response = false }"""
     )
     intercept[IllegalArgumentException](
-      cfg.auth.introspection.toIntrospectionConfig
+      cfg.auth.introspectionConfig
     )
   }
 
@@ -150,12 +151,32 @@ class AppConfigSpec extends FunSuite {
            client-id = "rs-client"
            client-secret = "s3cret"
            cache-ttl = 10 seconds
-           request-timeout = 2 seconds
+           request-timeout = 2 seconds, client-auth = client-secret-basic, jwt-response = false
          }"""
     )
-    val ic = cfg.auth.introspection.toIntrospectionConfig
+    val ic = cfg.auth.introspectionConfig
     assert(ic.isDefined)
     assertEquals(ic.get.clientId, "rs-client")
+  }
+
+  test("a forwarded client-certificate header without trusted proxies fails the boot") {
+    val error = intercept[Throwable](
+      load(s"""$dpopOn
+              $introspectionOff
+              mtls-forwarded-cert-header = "X-Forwarded-Client-Cert"""")
+    )
+    assert(Option(error.getMessage).exists(_.contains("mtls-trusted-proxies")), error.toString)
+  }
+
+  test("with trusted proxies the header is accepted; a malformed block fails the boot") {
+    val cfg = load(s"""$dpopOn
+                       $introspectionOff
+                       mtls-forwarded-cert-header = "X-Forwarded-Client-Cert"
+                       mtls-trusted-proxies = "10.0.0.0/8, fd00::/8"""")
+    assertEquals(cfg.auth.trustedProxies.size, 2)
+    intercept[Throwable](load(s"""$dpopOn
+                                 $introspectionOff
+                                 mtls-trusted-proxies = "10.0.0.0/33""""))
   }
 
 }

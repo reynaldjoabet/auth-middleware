@@ -61,15 +61,28 @@ object AuthZen {
     *
     * The token's roles are not sent. Whether the user's roles, as they are now, allow the action is
     * exactly what the PDP is asked, from its own current data.
+    *
+    * A delegated token (RFC 8693) also sends `act`: the current actor, the service acting for the
+    * user, so policy can tell "the user" from "a service on the user's behalf". Prior actors are
+    * not sent: RFC 8693 §4.1 forbids using them in access-control decisions.
     */
   def subjectOf(ctx: AuthContext): Subject = {
     val properties = JsonObject.fromIterable(
       ctx.tenant.map(t => "tenant" -> Json.fromString(t.value)).toList ++
-        ctx.clientId.map(c => "client_id" -> Json.fromString(c.value)).toList
+        ctx.clientId.map(c => "client_id" -> Json.fromString(c.value)).toList ++
+        ctx.actor.map(a => "act" -> currentActor(a)).toList
     )
     if (AuthContext.userPresent(ctx)) Subject("user", ctx.subject.value, properties)
     else Subject("client", ctx.clientId.fold(ctx.subject.value)(_.value), properties)
   }
+
+  // The current actor only, without its `prior` chain.
+  private def currentActor(actor: Actor): Json =
+    Json.fromFields(
+      actor.subject.map("sub" -> Json.fromString(_)).toList ++
+        actor.clientId.map("client_id" -> Json.fromString(_)).toList ++
+        actor.issuer.map("iss" -> Json.fromString(_)).toList
+    )
 
   private def withProperties(fields: (String, Json)*)(properties: JsonObject): Json =
     Json.fromFields(fields ++ Option.when(properties.nonEmpty)("properties" -> properties.asJson))

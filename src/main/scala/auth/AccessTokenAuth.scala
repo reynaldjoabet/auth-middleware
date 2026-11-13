@@ -268,6 +268,29 @@ object AccessTokenAuth {
     }
 
   /**
+    * Require an `authorization_details` grant (RFC 9396): one entry of the token must meet
+    * `requirement`, e.g. a `payment_initiation` entry allowing `initiate` at this API's URL. RFC
+    * 9700 §2.3 has a resource server verify, on every request, that the token was meant for this
+    * action on this resource; this is that check when the grant comes as authorization details
+    * rather than scopes.
+    *
+    * A token without a matching entry is valid but not allowed here: `403 insufficient_scope`. The
+    * challenge names no scope, as there is none the client could ask for instead.
+    *
+    * The check covers the common fields only. Compare the API-specific fields of the entry (an
+    * amount, an account) in the handler, using `requirement.firstMatch(ctx)`.
+    */
+  def requireAuthorizationDetail[F[_]: Monad](
+      requirement: AuthorizationDetailRequirement,
+      realm: String = "api"
+  )(routes: AuthedRoutes[AuthContext, F]): AuthedRoutes[AuthContext, F] =
+    Kleisli { req =>
+      if (req.context.authorizationDetails.exists(requirement.isMetBy)) routes(req)
+      else
+        OptionT.pure[F](errorResponse(AuthError.InsufficientScope(Set.empty), realm, None))
+    }
+
+  /**
     * Require at least one of `roles` or `scopes`, e.g. `requireAny(roles = Set(PayrollAdmin), scopes
     * = Set(payroll.read))` for "PayrollAdmin OR payroll.read". A token that meets none of them is
     * valid but not allowed here: `403 insufficient_scope`, never `401`, so the client knows a new

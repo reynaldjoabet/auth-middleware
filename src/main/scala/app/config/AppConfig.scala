@@ -9,8 +9,12 @@ import javax.crypto.SecretKey
 import auth.{HttpsUriNoFragment, IssuerUri, NonBlank}
 import auth.accesstoken.AccessTokenConfig
 import auth.dpop.DpopNonceValidator
-import auth.revocation.TokenIntrospection
-import com.comcast.ip4s.{Host, Port}
+import auth.mtls.Mtls
+import auth.revocation.{JwtIntrospectionResponse, PrivateKeyJwt, TokenIntrospection}
+import com.comcast.ip4s.{Cidr, Host, IpAddress, Port}
+import com.nimbusds.jose.jwk.source.JWKSourceBuilder
+import com.nimbusds.jose.jwk.JWK
+import com.nimbusds.jose.proc.SecurityContext
 import app.config.given
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
@@ -190,8 +194,29 @@ final case class AuthSettings(
     dpop: DpopSettings,
     introspection: IntrospectionSettings,
     cache: AuthCacheSettings,
-    mtlsForwardedCertHeader: Option[String :| NonBlank]
+    mtlsForwardedCertHeader: Option[String :| NonBlank],
+    mtlsTrustedProxies: String
 ) derives ConfigReader {
+
+  /**
+    * The CIDR blocks (RFC 4632) the forwarded client-certificate header is accepted from. A header
+    * without proxies fails the boot: trusting the header from every peer would let anyone who
+    * reaches the service directly present a stolen token's certificate.
+    */
+  val trustedProxies: List[Cidr[IpAddress]] =
+    Mtls.parseCidrs(mtlsTrustedProxies) match {
+      case Left(error)  => throw new IllegalArgumentException(s"auth.mtls-trusted-proxies: $error")
+      case Right(cidrs) =>
+        require(
+          mtlsForwardedCertHeader.isEmpty || cidrs.nonEmpty,
+          "auth.mtls-forwarded-cert-header is set but auth.mtls-trusted-proxies " +
+            "(AUTH_MTLS_TRUSTED_PROXIES) is empty: name the proxies that set the header"
+        )
+        cidrs
+    }
+
+  def introspectionConfig: Option[TokenIntrospection.IntrospectionConfig] =
+    introspection.toIntrospectionConfig(issuer, jwksUri, audience)
 
   def toAccessTokenConfig: AccessTokenConfig =
     AccessTokenConfig(
@@ -279,19 +304,55 @@ object DpopNonceMode {
 }
 
 /**
+  * How the service authenticates to the introspection endpoint.
+  */
+enum IntrospectionClientAuth derives CanEqual {
+  case ClientSecretBasic, PrivateKeyJwt
+}
+
+object IntrospectionClientAuth {
+
+  // Plain strings in the config (`client-auth = private-key-jwt`).
+  given ConfigReader[IntrospectionClientAuth] =
+    _root_.pureconfig.generic.semiauto.deriveEnumerationReader
+
+}
+
+/**
   * RFC 7662 revocation checking against the AS — the Redis-free alternative to a distributed
   * denylist. Endpoint and client credentials are required when enabled; the boot fails otherwise.
+  *
+  * @param clientAuth
+  *   how the service authenticates to the endpoint: `client-secret-basic` (`client-secret`), or
+  *   `private-key-jwt` (`private-key`, a JWK with its private part), which signs a fresh RFC 7523
+  *   assertion per request and needs no shared secret
+  * @param jwtResponse
+  *   ask for a signed response (RFC 9701) and accept an answer only when the AS's signature, `iss`,
+  *   `aud` and `iat` check out
   */
 final case class IntrospectionSettings(
     enabled: Boolean,
     endpoint: Option[String :| HttpsUriNoFragment],
     clientId: Option[String :| NonBlank],
     clientSecret: Option[Secret],
+    clientAuth: IntrospectionClientAuth,
+    privateKey: Option[Secret],
+    jwtResponse: Boolean,
     cacheTtl: FiniteDuration,
     requestTimeout: FiniteDuration
 ) derives ConfigReader {
 
-  def toIntrospectionConfig: Option[TokenIntrospection.IntrospectionConfig] =
+  /**
+    * The introspection client's settings. `issuer` is the authorization server's issuer identifier:
+    * the sole audience of a `private_key_jwt` assertion (RFC 10070) and the expected `iss` of a
+    * signed response. `jwksUri` holds the keys that response is signed with, and `audience`
+    * (besides the client id) may name this service in its `aud`.
+    */
+  def toIntrospectionConfig(
+      issuer: String,
+      jwksUri: String,
+      audience: String
+  ): Option[TokenIntrospection.IntrospectionConfig] =
     Option.when(enabled) {
       def required[A](field: Option[A], name: String): A =
         field.getOrElse(
@@ -299,12 +360,34 @@ final case class IntrospectionSettings(
             s"auth.introspection.$name is required when introspection is enabled"
           )
         )
+      val (secret, privateKeyJwt) = clientAuth match {
+        case IntrospectionClientAuth.ClientSecretBasic =>
+          (required(clientSecret, "client-secret").value, None)
+        case IntrospectionClientAuth.PrivateKeyJwt =>
+          val jwk =
+            try JWK.parse(required(privateKey, "private-key").value)
+            catch {
+              case e: java.text.ParseException =>
+                throw new IllegalArgumentException(
+                  s"auth.introspection.private-key is not a JWK: ${e.getMessage}"
+                )
+            }
+          ("", Some(PrivateKeyJwt(jwk, issuer)))
+      }
       TokenIntrospection.IntrospectionConfig(
         endpoint = Uri.unsafeFromString(required(endpoint, "endpoint")),
         clientId = required(clientId, "client-id"),
-        clientSecret = required(clientSecret, "client-secret").value,
+        clientSecret = secret,
         cacheTtl = cacheTtl,
-        requestTimeout = requestTimeout
+        requestTimeout = requestTimeout,
+        privateKeyJwt = privateKeyJwt,
+        jwtResponse = Option.when(jwtResponse)(
+          JwtIntrospectionResponse(
+            issuer,
+            Set(audience),
+            JWKSourceBuilder.create[SecurityContext](URI.create(jwksUri).toURL).build()
+          )
+        )
       )
     }
 

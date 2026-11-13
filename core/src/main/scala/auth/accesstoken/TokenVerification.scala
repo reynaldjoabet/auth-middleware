@@ -11,6 +11,7 @@ import scala.jdk.CollectionConverters.*
 
 import com.github.benmanes.caffeine.cache.{Cache, Caffeine, Expiry}
 import com.github.benmanes.caffeine.cache.stats.StatsCounter
+import com.nimbusds.jose.{JOSEException, JOSEObjectType}
 import com.nimbusds.jose.jwk.{JWKMatcher, JWKSelector}
 import com.nimbusds.jose.jwk.source.{
   CachingJWKSetSource,
@@ -21,13 +22,12 @@ import com.nimbusds.jose.jwk.source.{
 }
 import com.nimbusds.jose.proc.{
   BadJOSEException,
-  DefaultJOSEObjectTypeVerifier,
+  JOSEObjectTypeVerifier,
   JWSVerificationKeySelector,
   SecurityContext
 }
 import com.nimbusds.jose.util.{DefaultResourceRetriever, ResourceRetriever}
 import com.nimbusds.jose.util.events.EventListener
-import com.nimbusds.jose.JOSEException
 import com.nimbusds.jose.KeySourceException
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import com.nimbusds.jwt.proc.{DefaultJWTClaimsVerifier, DefaultJWTProcessor}
@@ -101,6 +101,31 @@ object TokenVerification {
   }
 
   /**
+    * Accepts a JOSE `typ` in `accepted`, compared as RFC 7515 §4.1.9 says media types are: ignoring
+    * case, with the `application/` prefix optional. RFC 9068 §4 has a resource server accept both
+    * `at+jwt` and `application/at+jwt`; a verbatim comparison would reject every token from an
+    * authorization server that sends the long form.
+    *
+    * A token without `typ` is rejected: it cannot be told apart from an ID token or another JWT the
+    * same issuer signs (RFC 8725 §3.11, RFC 9701 §8.1).
+    */
+  private[auth] def typeVerifier(
+      accepted: Set[JOSEObjectType]
+  ): JOSEObjectTypeVerifier[SecurityContext] = {
+    def normalized(typ: String): String =
+      typ.toLowerCase(java.util.Locale.ROOT).stripPrefix("application/")
+    val names = accepted.map(t => normalized(t.getType))
+    new JOSEObjectTypeVerifier[SecurityContext] {
+      def verify(typ: JOSEObjectType, context: SecurityContext): Unit =
+        Option(typ).map(t => normalized(t.getType)) match {
+          case Some(name) if names.contains(name) => ()
+          case Some(name)                         => throw new BadJOSEException(s"JOSE header typ $name not accepted")
+          case None                               => throw new BadJOSEException("JOSE header typ missing")
+        }
+    }
+  }
+
+  /**
     * The Nimbus processor enforcing `config`: JOSE `typ`, allowed algorithms, signature against
     * `keySource`, issuer, audience, required claims and lifetime (with clock skew).
     */
@@ -109,9 +134,7 @@ object TokenVerification {
       keySource: JWKSource[SecurityContext]
   ): DefaultJWTProcessor[SecurityContext] = {
     val p = new DefaultJWTProcessor[SecurityContext]()
-    p.setJWSTypeVerifier(
-      new DefaultJOSEObjectTypeVerifier[SecurityContext](config.acceptedTokenTypes.toSeq*)
-    )
+    p.setJWSTypeVerifier(typeVerifier(config.acceptedTokenTypes))
     p.setJWSKeySelector(
       new JWSVerificationKeySelector[SecurityContext](config.allowedAlgorithms.asJava, keySource)
     )
@@ -225,6 +248,27 @@ object TokenVerification {
                         case Cnf.Bound(c)   => Right(Some(c))
                         case Cnf.Invalid(r) => Left((AuthError.InvalidToken.Rejected, r))
                       }
+      // RFC 8693: a present-but-malformed act would hide who is acting on the
+      // subject's behalf, so it fails the token, like a malformed cnf.
+      actor <- Option(claims.getClaim("act")) match {
+                 case None        => Right(None)
+                 case Some(value) =>
+                   Actor
+                     .parse(value)
+                     .map(Some(_))
+                     .left
+                     .map(r => (AuthError.InvalidToken.Rejected, r))
+               }
+      // RFC 9396: a malformed entry cannot be enforced, and skipping it could
+      // let a route that requires a grant see a different one.
+      details <- Option(claims.getClaim("authorization_details")) match {
+                   case None        => Right(Nil)
+                   case Some(value) =>
+                     AuthorizationDetail
+                       .parseAll(value)
+                       .left
+                       .map(r => (AuthError.InvalidToken.Rejected, r))
+                 }
     } yield AuthContext(
       subject = subject,
       clientId = stringClaim(claims, "client_id")
@@ -236,7 +280,9 @@ object TokenVerification {
       acr = stringClaim(claims, "acr").flatMap(Acr.option),
       authTime = dateClaim(claims, "auth_time"),
       confirmation = confirmation,
-      claims = claims
+      claims = claims,
+      actor = actor,
+      authorizationDetails = details
     )
 
   /**

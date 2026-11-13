@@ -16,10 +16,10 @@ import cats.syntax.all.*
 
 import com.github.benmanes.caffeine.cache.Caffeine
 import io.circe.Json
-import org.http4s.{BasicCredentials, Method, Request, Uri, UrlForm}
+import org.http4s.{BasicCredentials, MediaRange, Method, Request, Uri, UrlForm}
 import org.http4s.circe.*
 import org.http4s.client.Client
-import org.http4s.headers.Authorization
+import org.http4s.headers.{Accept, Authorization}
 
 /**
   * Revocation checking via OAuth 2.0 Token Introspection (RFC 7662) — the Duende pattern for
@@ -79,10 +79,12 @@ object TokenIntrospection {
   final case class IntrospectionConfig(
       endpoint: Uri,
       clientId: String,
-      clientSecret: String,
+      clientSecret: String = "",
       cacheTtl: FiniteDuration = 10.seconds,
       requestTimeout: FiniteDuration = 2.seconds,
-      cacheMaxEntries: Long = 100_000L
+      cacheMaxEntries: Long = 100_000L,
+      privateKeyJwt: Option[PrivateKeyJwt] = None,
+      jwtResponse: Option[JwtIntrospectionResponse] = None
   ) {
 
     require(
@@ -90,7 +92,11 @@ object TokenIntrospection {
       "introspection endpoint must be https (client credentials and tokens transit it)"
     )
     require(clientId.nonEmpty, "clientId must not be empty")
-    require(clientSecret.nonEmpty, "clientSecret must not be empty")
+    require(
+      clientSecret.nonEmpty != privateKeyJwt.isDefined,
+      "authenticate to the introspection endpoint with exactly one of a client secret " +
+        "or private_key_jwt"
+    )
     require(cacheTtl >= Duration.Zero, "cacheTtl must not be negative")
     require(requestTimeout > Duration.Zero, "requestTimeout must be positive")
 
@@ -159,27 +165,54 @@ object TokenIntrospection {
           }
 
         private def introspect(rawToken: String): F[Result] = {
-          val request = Request[F](Method.POST, config.endpoint)
-            // token_type_hint (RFC 7662 §2.1) spares the AS a lookup fan-out
-            .withEntity(
-              UrlForm("token" -> rawToken, "token_type_hint" -> "access_token")
-            )
-            .putHeaders(
-              Authorization(
-                BasicCredentials(config.clientId, config.clientSecret)
+          // token_type_hint (RFC 7662 §2.1) spares the AS a lookup fan-out
+          val fields  = List("token" -> rawToken, "token_type_hint" -> "access_token")
+          val request = config.privateKeyJwt match {
+            // RFC 7523 / RFC 10070: a fresh signed assertion in the form.
+            case Some(pkj) =>
+              Async[F]
+                .delay(pkj.formFields(config.clientId))
+                .map(auth =>
+                  Request[F](Method.POST, config.endpoint).withEntity(UrlForm(fields ++ auth*))
+                )
+            case None =>
+              Request[F](Method.POST, config.endpoint)
+                .withEntity(UrlForm(fields*))
+                .putHeaders(Authorization(BasicCredentials(config.clientId, config.clientSecret)))
+                .pure[F]
+          }
+          val asked = config.jwtResponse.fold(request)(_ =>
+            request.map(
+              _.putHeaders(
+                Accept(MediaRange.parse(JwtIntrospectionResponse.MediaType).toOption.get)
               )
             )
+          )
 
-          client
-            .run(request)
-            .use { response =>
-              if (response.status.isSuccess)
-                response
-                  .as[Json]
-                  .map(_.hcursor.get[Boolean]("active").getOrElse(false))
-                  .map(active => if (active) Result.Active else Result.Inactive)
-              else Result.Unavailable.pure[F].widen
-            }
+          asked
+            .flatMap(client.run(_).use { response =>
+              if (!response.status.isSuccess) Result.Unavailable.pure[F].widen
+              else
+                config.jwtResponse match {
+                  // RFC 9701: only a verified, signed answer counts. Plain JSON
+                  // (an AS that ignored Accept) is not trusted.
+                  case Some(expected) =>
+                    response.as[String].flatMap { body =>
+                      Async[F]
+                        .blocking(expected.verify(body, config.clientId))
+                        .map {
+                          case Some(true)  => Result.Active
+                          case Some(false) => Result.Inactive
+                          case None        => Result.Unavailable
+                        }
+                    }
+                  case None =>
+                    response
+                      .as[Json]
+                      .map(_.hcursor.get[Boolean]("active").getOrElse(false))
+                      .map(active => if (active) Result.Active else Result.Inactive)
+                }
+            })
             .timeout(config.requestTimeout)
             .handleError(_ => Result.Unavailable)
         }

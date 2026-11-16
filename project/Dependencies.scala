@@ -12,7 +12,7 @@ object Dependencies {
     val zioConfig  = "4.1.0"
     val zioSchema  = "1.9.0"
     val zioBlocks  = "0.017"
-    val zioKafka   = "3.8.1"
+    val zioKafka   = "4.0.0"
 
     // --- HTTP ---
     val http4s      = "0.23.38"

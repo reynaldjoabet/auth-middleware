@@ -5,32 +5,32 @@ object Dependencies {
   private object Version {
 
     // --- ZIO ecosystem ---
-    val zio        = "2.1.26"
+    val zio        = "2.1.27"
     val zioJson    = "1.1.0"
     val zioHttp    = "3.11.6"
     val zioLogging = "2.5.3"
-    val zioConfig  = "4.1.0"
+    val zioConfig  = "4.1.2"
     val zioSchema  = "1.9.0"
     val zioBlocks  = "0.017"
     val zioKafka   = "4.0.0"
 
     // --- HTTP ---
-    val http4s      = "0.23.38"
+    val http4s      = "0.23.39"
     val http4sNetty = "0.7.4"
-    val netty       = "4.2.17.Final"
+    val netty       = "4.2.21.Final"
     val sttp4       = "4.0.25"
     val tapir       = "1.13.18"
 
     // --- JSON ---
-    val jsoniter = "2.41.2"
-    val circe    = "0.14.16"
+    val jsoniter = "2.43.0"
+    val circe    = "0.14.17"
 
     // --- FP ---
     val catsEffect      = "3.7.1"
-    val fs2             = "3.14.0"
+    val fs2             = "3.16.0"
     val fs2Kafka        = "4.2.0"
     val chimney         = "2.1.0"
-    val iron            = "3.3.2"
+    val iron            = "3.4.1"
     val hedgehog        = "0.13.0"
     val scalacheck      = "1.20.0"
     val munit           = "1.3.6"
@@ -41,7 +41,7 @@ object Dependencies {
     val magnum   = "2.0.0-M4"
     val skunk    = "2.0.0-RC3"
     val hikaricp = "7.1.0"
-    val flyway   = "13.8.0"
+    val flyway   = "13.13.0"
     val postgres = "42.7.14"
 
     // --- Security ---
@@ -54,9 +54,9 @@ object Dependencies {
     val vault            = "5.1.0"
 
     // --- Logging ---
-    val scribe  = "3.19.0"
+    val scribe  = "3.19.1"
     val slf4j   = "2.0.20"
-    val logback = "1.6.6"
+    val logback = "1.6.8"
 
     // --- Cache ---
     val caffeine = "3.3.1"
@@ -64,10 +64,10 @@ object Dependencies {
     // --- Observability ---
     val datadog = "2.62.0"
     val kamon   = "2.7.7"
-    val otel4s  = "1.1.0"
+    val otel4s  = "1.2.0"
 
     // --- Config ---
-    val pureconfig = "0.17.10"
+    val pureconfig = "0.17.11"
 
     // --- Cloud ---
     val awsV2         = "2.26.15"

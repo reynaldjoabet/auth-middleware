@@ -104,7 +104,10 @@ object PostgresStores {
         Session.DefaultConnectionParameters ++ Map(
           "application_name"   -> "auth-middleware-store",
           "statement_timeout"  -> settings.commandTimeout.toMillis.toString,
-          "synchronous_commit" -> (if (settings.synchronousCommit) "on" else "off")
+          "synchronous_commit" -> (if (settings.synchronousCommit) "on" else "off"),
+          // Short OLTP statements: compiling one would cost more than running
+          // it. PostgreSQL 19 turns JIT off by default; this makes 18 match.
+          "jit" -> "off"
         )
       )
       .single

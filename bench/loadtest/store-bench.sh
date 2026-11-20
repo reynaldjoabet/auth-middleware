@@ -7,6 +7,7 @@
 #
 #   bench/loadtest/store-bench.sh                 # 5 s runs, 3 rounds, 48 callers
 #   SECONDS_PER_RUN=10 ROUNDS=5 FIBERS=96 bench/loadtest/store-bench.sh
+#   PG_BIN=/opt/homebrew/opt/postgresql@19/bin bench/loadtest/store-bench.sh
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -16,6 +17,10 @@ ROUNDS=${ROUNDS:-3}
 FIBERS=${FIBERS:-48}
 PG_PORT=${PG_PORT:-55434}
 REDIS_PORT=${REDIS_PORT:-6380}
+# Which PostgreSQL to run: a bin directory, e.g. /opt/homebrew/opt/postgresql@19/bin.
+# Default: whatever initdb is on PATH.
+PG_BIN=${PG_BIN:-}
+[[ -n "$PG_BIN" ]] && export PATH="$PG_BIN:$PATH"
 
 cleanup() {
   set +e
@@ -32,5 +37,6 @@ createdb -h 127.0.0.1 -p "$PG_PORT" -U auth auth
 redis-server --port "$REDIS_PORT" --bind 127.0.0.1 --save "" --appendonly no \
   --daemonize yes --logfile "$WORK/redis.log"
 
+echo "$(postgres --version)"
 cd "$ROOT"
 sbt --client "bench/runMain bench.StoreThroughput $PG_PORT $REDIS_PORT $SECONDS_PER_RUN $ROUNDS $FIBERS"

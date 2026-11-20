@@ -58,7 +58,7 @@ jobs:
     # For PostgresStoresSpec, which is skipped when TEST_POSTGRES_PORT is unset.
     services:
       postgres:
-        image: postgres:18
+        image: postgres:19
         env:
           POSTGRES_USER: auth
           POSTGRES_PASSWORD: auth

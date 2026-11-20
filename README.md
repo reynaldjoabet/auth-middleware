@@ -2236,6 +2236,21 @@ Postgres is the better store in these respects:
 
 Use Postgres when the shared-state load is mostly revocation checks behind the cache and durability or fewer moving parts matter. Keep Redis when DPoP traffic is heavy, because every DPoP request writes to the store. A mixed deployment (denylist in Postgres, DPoP `jti`s in Redis) would need a per-store backend setting, which doesn't exist yet.
 
+#### PostgreSQL 18 and 19
+
+The migrations and the store's statements run unchanged on PostgreSQL 18 and 19, and CI tests against 19. The store's sessions turn JIT off (`jit=off`), which is 19's new default: compiling one of these short statements would cost more than running it, and setting it makes 18 behave the same.
+
+PostgreSQL 19's automatic improvements barely touch this workload. Each statement is a handful of index lookups, so `EXPLAIN (ANALYZE, BUFFERS)` gives the same plans and nearly the same buffer counts on both versions. The revocation check reads 64 buffers on each; a batch of 64 `jti` writes produces the same WAL. The one visible change is that 19 marks pages all-visible during ordinary queries, which 18 left to vacuum.
+
+The expiry index on the two DPoP tables is BRIN, chosen because only the sweeper reads it. A simulation of steady-state churn on 19 (inserts, sweeps, then vacuum, so new rows land in freed space) confirmed the choice. The BRIN index still found 1,000 expired rows by reading 10 heap blocks, the same as a btree. A btree would cost 33% more WAL records and 25% more WAL bytes on every per-request insert, and its index was 26 MB against BRIN's 24 kB.
+
+PostgreSQL 19 features that belong in operations, not in the migrations:
+
+- **`REPACK (CONCURRENTLY)`** reclaims space without blocking reads or writes. Autovacuum keeps the per-request tables healthy in steady state, but after a traffic spike `auth.dpop_spent_jtis` and `auth.dpop_nonces` keep their high-water size. `REPACK (CONCURRENTLY) auth.dpop_spent_jtis;` returns it without the downtime `VACUUM FULL` would cause. It needs a free replication slot (`max_repack_replication_slots`); `pg_stat_progress_repack` shows its progress.
+- **`pg_stat_autovacuum_scores`** shows how autovacuum ranks each table. Check that the two DPoP tables, which get an insert and a delete per DPoP request, are not starved on a busy server. Their per-table thresholds are already set in V2. **`pg_stat_lock`** shows per-lock-type contention.
+- **`WAIT FOR LSN`** gives a standby read-your-writes consistency. Revocation checks go to the primary (`db.host`); if they are ever sent to a replica, a just-revoked token stays accepted until the replica replays the revocation, unless the session waits for its LSN first.
+- **`INSERT ... ON CONFLICT DO SELECT`** returns the existing row on a conflict, which is the "get or create" pattern. The store doesn't need it: spending a `jti` must say whether *this* call spent it, and the current `ON CONFLICT DO UPDATE ... WHERE expired RETURNING` does that in one round trip.
+
 ### DPoP replay defence: the stateless and stateful flows
 
 A DPoP proof is a small JWT the client signs for each request with its own key (RFC 9449). It carries the method (`htm`), URL (`htu`), time (`iat`), a hash of the access token (`ath`) and a unique id (`jti`). The threat is **replay**: someone who captures a proof in transit sends it again. Two mechanisms stop that, and `auth.dpop.nonce.mode` (`DPOP_NONCE_MODE`) decides where their state lives when several nodes sit behind a load balancer:

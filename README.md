@@ -2244,6 +2244,8 @@ PostgreSQL 19's automatic improvements barely touch this workload. Each statemen
 
 The expiry index on the two DPoP tables is BRIN, chosen because only the sweeper reads it. A simulation of steady-state churn on 19 (inserts, sweeps, then vacuum, so new rows land in freed space) confirmed the choice. The BRIN index still found 1,000 expired rows by reading 10 heap blocks, the same as a btree. A btree would cost 33% more WAL records and 25% more WAL bytes on every per-request insert, and its index was 26 MB against BRIN's 24 kB.
 
+Migration `V3__uuidv7_primary_keys.sql` switches the `id` defaults of `auth.users`, `auth.roles` and `auth.passkeys` from `gen_random_uuid()` to `uuidv7()` (PostgreSQL 18 and later). A random key lands each insert on a random leaf of the primary-key btree, so after a checkpoint most inserts write a full-page image to WAL. On 19, 50,000 single-row inserts into `auth.users` after a checkpoint (with 500,000 rows already present) wrote 78 full-page images instead of 2,439 and 20 MB of WAL instead of 34 MB. The primary key was 17 MB instead of 21 MB. A v7 id encodes its creation time to the millisecond, so don't expose one where that matters. `security_stamp` and `concurrency_stamp` stay random.
+
 PostgreSQL 19 features that belong in operations, not in the migrations:
 
 - **`REPACK (CONCURRENTLY)`** reclaims space without blocking reads or writes. Autovacuum keeps the per-request tables healthy in steady state, but after a traffic spike `auth.dpop_spent_jtis` and `auth.dpop_nonces` keep their high-water size. `REPACK (CONCURRENTLY) auth.dpop_spent_jtis;` returns it without the downtime `VACUUM FULL` would cause. It needs a free replication slot (`max_repack_replication_slots`); `pg_stat_progress_repack` shows its progress.

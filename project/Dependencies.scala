@@ -12,7 +12,7 @@ object Dependencies {
     val zioConfig  = "4.1.2"
     val zioSchema  = "1.9.0"
     val zioBlocks  = "0.017"
-    val zioKafka   = "4.0.0"
+    val zioKafka   = "4.2.0"
 
     // --- HTTP ---
     val http4s      = "0.23.39"
@@ -29,7 +29,7 @@ object Dependencies {
     val catsEffect      = "3.7.1"
     val fs2             = "3.16.0"
     val fs2Kafka        = "4.2.0"
-    val chimney         = "2.1.0"
+    val chimney         = "2.1.1"
     val iron            = "3.4.1"
     val hedgehog        = "0.13.0"
     val scalacheck      = "1.20.0"
